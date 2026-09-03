@@ -1,0 +1,6 @@
+limits:
+  max_position_usd: 100
+  max_daily_loss_usd: 50
+  max_open_positions: 5
+  max_slippage_bps: 300
+

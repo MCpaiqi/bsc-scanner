@@ -1,0 +1,5 @@
+app:
+  mode: PAPER
+  timezone: UTC
+  environment: development
+

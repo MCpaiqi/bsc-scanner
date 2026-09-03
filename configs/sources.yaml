@@ -1,0 +1,8 @@
+solana:
+  rpc_url: null
+  ws_url: null
+market:
+  api_key: null
+dex:
+  api_key: null
+

@@ -1,0 +1,10 @@
+wallet:
+  historical_profitability: 25
+  early_entry_ability: 20
+  consistency: 15
+  win_rate: 10
+  risk_adjusted_return: 10
+  activity_recency: 10
+  trade_quality: 5
+  bot_penalty: 5
+
