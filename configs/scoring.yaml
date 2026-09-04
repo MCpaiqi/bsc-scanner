@@ -10,13 +10,15 @@ wallet:
 
 smart_money:
   # Weights are applied to point-in-time metrics only. Values are fractions.
-  win_rate: 0.20
-  roi: 0.20
-  early_entry: 0.20
-  high_multiple: 0.15
+  win_rate: 0.18
+  roi: 0.14
+  median_roi: 0.10
+  early_entry: 0.18
+  high_multiple: 0.14
   ath_capture: 0.10
-  consistency: 0.10
-  graduation: 0.05
+  consistency: 0.08
+  graduation: 0.04
+  risk_adjusted_return: 0.04
   rug_penalty: 0.10
   bot_penalty: 0.10
   wash_penalty: 0.10

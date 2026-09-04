@@ -9,6 +9,7 @@ from .scoring import (
     SmartMoneyScoreResult,
     SmartMoneyScoreWeights,
     calculate_smart_money_score,
+    load_smart_money_weights,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "calculate_smart_money_score",
     "discover_historical_winners",
     "identify_early_buyers",
+    "load_smart_money_weights",
 ]

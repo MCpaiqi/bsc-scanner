@@ -18,18 +18,18 @@ score = sa.Numeric(6, 2)
 
 
 def upgrade() -> None:
-    for name, column in (
-        ("launchpad", sa.Column("launchpad", sa.String(64))),
-        ("creator_address", sa.Column("creator_address", sa.String(128))),
-        ("decimals", sa.Column("decimals", sa.Integer())),
-        ("total_supply", sa.Column("total_supply", raw_amount)),
-        ("first_trade_at", sa.Column("first_trade_at", sa.DateTime(timezone=True))),
-        ("graduation_at", sa.Column("graduation_at", sa.DateTime(timezone=True))),
-        ("ath_at", sa.Column("ath_at", sa.DateTime(timezone=True))),
-        ("ath_price", sa.Column("ath_price", decimal_18)),
-        ("graduation_liquidity", sa.Column("graduation_liquidity", decimal_18)),
-        ("status", sa.Column("status", sa.String(32), nullable=False, server_default="UNKNOWN")),
-        ("outcome_class", sa.Column("outcome_class", sa.String(32))),
+    for column in (
+        sa.Column("launchpad", sa.String(64)),
+        sa.Column("creator_address", sa.String(128)),
+        sa.Column("decimals", sa.Integer()),
+        sa.Column("total_supply", raw_amount),
+        sa.Column("first_trade_at", sa.DateTime(timezone=True)),
+        sa.Column("graduation_at", sa.DateTime(timezone=True)),
+        sa.Column("ath_at", sa.DateTime(timezone=True)),
+        sa.Column("ath_price", decimal_18),
+        sa.Column("graduation_liquidity", decimal_18),
+        sa.Column("status", sa.String(32), nullable=False, server_default="UNKNOWN"),
+        sa.Column("outcome_class", sa.String(32)),
     ):
         op.add_column("tokens", column)
     op.create_index("ix_tokens_launchpad", "tokens", ["launchpad"])
@@ -184,4 +184,3 @@ def downgrade() -> None:
         "graduation_at", "ath_at", "ath_price", "graduation_liquidity", "status", "outcome_class",
     ):
         op.drop_column("tokens", name)
-

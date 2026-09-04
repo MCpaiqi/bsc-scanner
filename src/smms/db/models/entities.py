@@ -96,7 +96,9 @@ class Token(TimestampMixin, Base):
     volume_5m: Mapped[Decimal | None] = mapped_column(Decimal18)
     volume_1h: Mapped[Decimal | None] = mapped_column(Decimal18)
     volume_24h: Mapped[Decimal | None] = mapped_column(Decimal18)
+    volume: Mapped[Decimal | None] = mapped_column(Decimal18)
     holder_count: Mapped[int | None] = mapped_column()
+    holders: Mapped[int | None] = mapped_column()
     status: Mapped[str] = mapped_column(String(32), default=TokenStatus.UNKNOWN.value, nullable=False)
     outcome_class: Mapped[str | None] = mapped_column(String(32))
     top_holder_concentration: Mapped[Decimal | None] = mapped_column(Score)
@@ -160,7 +162,16 @@ class TradeEvent(Base):
     tx_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     block_number: Mapped[int | None] = mapped_column(BigInteger)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
-    side: Mapped[str] = mapped_column(String(8), nullable=False)
+    side: Mapped[TradeSide] = mapped_column(
+        SqlEnum(
+            TradeSide,
+            native_enum=False,
+            create_constraint=True,
+            validate_strings=True,
+            length=8,
+        ),
+        nullable=False,
+    )
     token_amount: Mapped[Decimal | None] = mapped_column(Decimal18)
     native_amount: Mapped[Decimal | None] = mapped_column(Decimal18)
     price: Mapped[Decimal | None] = mapped_column(Decimal18)
@@ -217,6 +228,7 @@ class WalletTokenPerformance(Base):
     max_pnl: Mapped[Decimal | None] = mapped_column(Decimal18)
     max_drawdown: Mapped[Decimal | None] = mapped_column(Decimal18)
     exit_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    holding_duration: Mapped[int | None] = mapped_column(BigInteger)
     holding_duration_seconds: Mapped[int | None] = mapped_column(BigInteger)
     roi: Mapped[Decimal | None] = mapped_column(Decimal18)
     multiple: Mapped[Decimal | None] = mapped_column(Decimal18)
@@ -246,6 +258,7 @@ class WalletPerformance(Base):
     median_roi: Mapped[Decimal | None] = mapped_column(Decimal18)
     avg_multiple: Mapped[Decimal | None] = mapped_column(Decimal18)
     median_multiple: Mapped[Decimal | None] = mapped_column(Decimal18)
+    risk_adjusted_return: Mapped[Decimal | None] = mapped_column(Decimal18)
     total_realized_pnl: Mapped[Decimal | None] = mapped_column(Decimal18)
     max_multiple: Mapped[Decimal | None] = mapped_column(Decimal18)
     early_entry_rate: Mapped[Decimal | None] = mapped_column(Score)
