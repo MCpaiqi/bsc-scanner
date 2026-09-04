@@ -1,6 +1,10 @@
-# Smart Money Meme Scanner
+# Smart Money Meme Intelligence Engine
 
-Smart Money Meme Scanner (SMMS) is a Solana research platform for identifying early smart-wallet activity, generating explainable signals, and validating them with backtests and paper trading.
+SMMS is a multi-chain research platform for identifying early smart-wallet activity, generating explainable signals, and validating them with backtests and paper trading.
+
+The current primary launchpad is Flap on BNB Smart Chain. The existing Solana
+provider remains supported as a parallel data source. Launchpad-specific logic
+is isolated behind chain-neutral adapter interfaces.
 
 Phase 0 intentionally ships with paper trading as the default. No live execution is implemented. The `ENABLE_LIVE_TRADING` and `LIVE_CONFIRMATION` flags are both required before a future live adapter may be enabled.
 

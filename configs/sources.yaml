@@ -7,6 +7,17 @@ chains:
     ws_url: null
     chain_id: 56
 
+launchpads:
+  flap:
+    enabled: false
+    factory_address: null # VERIFY_ON_CHAIN
+    portal_address: null # VERIFY_ON_CHAIN
+    router_address: null # VERIFY_ON_CHAIN
+    bonding_curve_address: null # VERIFY_ON_CHAIN
+    creation_event_topic: null # VERIFY_ON_CHAIN
+    buy_event_topic: null # VERIFY_ON_CHAIN
+    sell_event_topic: null # VERIFY_ON_CHAIN
+
 solana:
   rpc_url: null
   ws_url: null

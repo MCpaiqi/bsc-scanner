@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "smart-money-meme-scanner"
 version = "0.1.0"
-description = "Solana smart-money intelligence, backtesting, and paper-trading platform"
+description = "Multi-chain smart-money meme intelligence, backtesting, and paper-trading platform"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

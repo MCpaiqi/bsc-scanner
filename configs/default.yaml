@@ -7,6 +7,15 @@ chains:
   bsc:
     chain_id: 56
 
+launchpads:
+  flap:
+    enabled: false
+    # Contract addresses and event selectors remain unset until verified on-chain.
+    factory_address: null # VERIFY_ON_CHAIN
+    portal_address: null # VERIFY_ON_CHAIN
+    router_address: null # VERIFY_ON_CHAIN
+    bonding_curve_address: null # VERIFY_ON_CHAIN
+
 historical_winner:
   min_multiple: 50
   preferred_multiple: 100
