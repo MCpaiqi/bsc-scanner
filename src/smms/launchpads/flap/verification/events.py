@@ -1,8 +1,7 @@
-"""Verified and candidate Flap event declarations.
+"""已验证及候选 Flap 事件声明。
 
-The event catalog is intentionally data-only. It records what has been
-verified, while leaving unknown contract roles and lifecycle semantics out of
-the enabled adapter configuration.
+事件目录刻意保持为纯数据。它只记录已经验证的事实；未知的合约角色和
+生命周期语义不会写入可启用的适配器配置。
 """
 
 from collections.abc import Mapping

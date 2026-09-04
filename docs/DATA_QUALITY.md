@@ -1,53 +1,36 @@
-# Flap Data Quality
+# Flap 数据质量
 
-**Report status:** Pending complete single-token backfill.
+**报告状态：** 等待完成单 Token 历史回填。
 
-This report deliberately uses `UNKNOWN` or `PENDING` instead of zero when a
-measurement has not been established. The creation evidence below is real; the
-trade counts are not yet a committed historical result.
+当某项测量尚未建立时，本报告使用 `UNKNOWN` 或 `PENDING`，绝不以零或看似合理的默认值代替。下面的创建证据是真实记录；交易数量尚未形成已提交的历史结果。
 
-## Sample token
+## 示例 Token
 
-| Field | Value |
+| 字段 | 值 |
 | --- | --- |
 | Token | `0x622877b3b964285a8103cc714b5a886177077777` |
-| Creator | `0x52cfb705a72eca722803cea6fd4a0c7199999999` |
-| Creation block | `119877660` |
-| Creation transaction | `0xc3f048ef4df0eb697554cd2cfdfdc0624b353af63eaa7b11d4d8d777e6466342` |
-| Creation log index | `83` |
-| Creation timestamp | `2026-09-04 07:20:47 UTC` |
-| Evidence level | `VERIFIED` for the creation receipt/log |
+| 创建者 | `0x52cfb705a72eca722803cea6fd4a0c7199999999` |
+| 创建区块 | `119877660` |
+| 创建交易 | `0xc3f048ef4df0eb697554cd2cfdfdc0624b353af63eaa7b11d4d8d777e6466342` |
+| 创建日志索引 | `83` |
+| 创建时间 | `2026-09-04 07:20:47 UTC` |
+| 证据等级 | 创建回执/日志为 `VERIFIED` |
 
-## Backfill quality gate
+## 回填质量门禁
 
-| Measure | Current status |
+| 指标 | 当前状态 |
 | --- | --- |
-| Block range | `PENDING: record exact bounded trade range` |
-| BUY count | `PENDING: commit real TokenBought fixture` |
-| SELL count | `PENDING: ON_CHAIN_FIXTURE_REQUIRED` |
-| Wallet count | `UNKNOWN` |
-| Decode errors | `UNKNOWN` until the real fixture run |
-| Timestamp errors | `UNKNOWN` until the real fixture run |
-| Duplicate events | `UNKNOWN` until the real fixture run |
-| Unknown events | `UNKNOWN` until the real fixture run |
-| Data completeness | `CREATION_VERIFIED_ONLY` |
-| Overall | `NOT_INGESTION_SUCCESS` |
+| 区块范围 | `PENDING: record exact bounded trade range` |
+| BUY 数量 | `PENDING: commit real TokenBought fixture` |
+| SELL 数量 | `PENDING: ON_CHAIN_FIXTURE_REQUIRED` |
+| 钱包数量 | `UNKNOWN` |
+| 解码错误 | `UNKNOWN`，等待真实 fixture 执行 |
+| 时间戳错误 | `UNKNOWN`，等待真实 fixture 执行 |
+| 重复事件 | `UNKNOWN`，等待真实 fixture 执行 |
+| 未知事件 | `UNKNOWN`，等待真实 fixture 执行 |
+| 数据完整度 | `CREATION_VERIFIED_ONLY` |
+| 总体结果 | `NOT_INGESTION_SUCCESS` |
 
-## Required final report
+完成真实 PostgreSQL 回填后，应使用 `FlapDataQualityReport.render()` 的输出替换待定值，并为每一行保留 `(chain, block_number, tx_hash, event_index, source)` 证据身份。
 
-After a real PostgreSQL backfill, replace the pending values with the output of
-`FlapDataQualityReport.render()` and retain the raw evidence identities for
-every row:
-
-```text
-(chain, block_number, tx_hash, event_index, source)
-```
-
-Graduation and migration may remain `UNKNOWN` when no verified lifecycle event
-or state transition exists; they must not be inferred from a missing row.
-
-The rendered report always includes `Creator`. `Unknown Events: UNKNOWN` means
-the scan did not measure an unknown-event count; an explicit numeric zero is
-reserved for a scan that actually measured no unknown events. A token is not a
-successful historical backfill until both BUY and SELL events are decoded with
-complete block, timestamp, and evidence identities.
+毕业和迁移在没有验证事件或状态变化时可以保持 `UNKNOWN`，不得从缺失记录推断。只有 BUY、SELL、区块、时间戳和证据身份均完整时，Token 才能通过历史回填门禁。

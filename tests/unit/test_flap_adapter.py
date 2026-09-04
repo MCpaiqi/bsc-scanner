@@ -408,8 +408,8 @@ def test_flap_data_quality_report_handles_missing_trade_facts() -> None:
     assert report.missing_timestamps == 1
     assert report.first_trade is None
     assert report.creator_address is None
-    assert "Creator: UNKNOWN" in report.render()
-    assert "Unknown Events: UNKNOWN" in report.render()
+    assert "创建者：UNKNOWN" in report.render()
+    assert "未知事件：UNKNOWN" in report.render()
     assert report.overall == "FAIL"
 
 

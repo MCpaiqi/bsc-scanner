@@ -4,7 +4,7 @@ from smms.config.settings import get_settings
 from smms.db.database import check_database
 from smms.db.redis import check_redis
 
-app = FastAPI(title="Smart Money Meme Intelligence Engine", version="0.1.0")
+app = FastAPI(title="聪明钱 Meme 情报引擎", version="0.1.0", description="多链 Meme 研究与数据摄取 API")
 
 
 @app.get("/health")

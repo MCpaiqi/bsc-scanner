@@ -12,8 +12,8 @@ launchpads:
     enabled: false
     verification:
       status: VERIFY_ON_CHAIN
-    # Portal and event layouts below are verified; creation/trade emitter roles
-    # remain unset until their real receipt addresses are confirmed.
+    # 下方 Portal 和事件布局已经验证；创建/交易事件发出者地址
+    # 必须等真实回执确认后才能填写。
     factory_address: null # VERIFY_ON_CHAIN
     portal_address: "0xe2cE6ab80874Fa9Fa2aAE65D277Dd6B8e65C9De0"
     router_address: null # VERIFY_ON_CHAIN

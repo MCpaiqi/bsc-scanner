@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "smart-money-meme-scanner"
 version = "0.1.0"
-description = "Multi-chain smart-money meme intelligence, backtesting, and paper-trading platform"
+description = "多链聪明钱 Meme 情报、回测与模拟交易平台"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

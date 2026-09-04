@@ -1,5 +1,7 @@
-# Strategy
+# 研究策略
 
-Phase 3 establishes the historical research inputs. Winner discovery is evaluated at an explicit `as_of` timestamp and requires `ath_multiple >= min_multiple` within the configured lookback. Future tokens, stale samples, missing multiples, and non-winner outcomes are excluded rather than estimated.
+Phase 3 建立历史研究输入。历史赢家发现必须在显式 `as_of` 时间点评估，并要求配置回看窗口内满足 `ath_multiple >= min_multiple`。未来发行的 Token、过期样本、倍数缺失和非赢家结果会被排除，而不是估算。
 
-Early buyers are derived from normalized transactions. A candidate must have `side=BUY`, the target token as `token_out`, and a timestamp between token creation and `max_entry_hours`. Transfer, LP, airdrop, internal-routing, and unknown event types are excluded. Wallets are de-duplicated by address and ranked by first buy time, buy size, then address; Bot metadata remains attached for later classification.
+早期买家来自标准化交易。候选事件必须满足 `side=BUY`，目标 Token 是 `token_out`，且时间戳位于 Token 创建后 `max_entry_hours` 窗口内。转账、LP 操作、空投、内部路由和未知事件均被排除。钱包按地址去重，并依次按首次买入时间、买入规模和地址排序；Bot 元数据保留给后续分类。
+
+任何信号或回测特征都必须遵循时间点一致性：在时间 `t` 只能使用当时已知的链上事实。最终 ATH、最终 ROI、最终持有人数量和毕业结果只能作为事后标签，不能泄漏到历史信号中。

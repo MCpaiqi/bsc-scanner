@@ -1,4 +1,3 @@
-# Backtesting
+# 回测
 
-Timeline replay, transaction costs, and out-of-sample validation are deferred to Phase 7. Future observations must never influence signal generation.
-
+时间线回放、交易成本建模和样本外验证推迟到 Phase 7。未来发生的观察值不得参与历史时点的信号生成。

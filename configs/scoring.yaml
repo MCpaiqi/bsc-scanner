@@ -9,7 +9,7 @@ wallet:
   bot_penalty: 5
 
 smart_money:
-  # Weights are applied to point-in-time metrics only. Values are fractions.
+  # 权重只应用于时间点一致的指标；数值使用小数表示。
   win_rate: 0.18
   roi: 0.14
   median_roi: 0.10

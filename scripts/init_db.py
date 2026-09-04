@@ -5,4 +5,4 @@ from alembic.config import Config
 
 if __name__ == "__main__":
     command.upgrade(Config("alembic.ini"), "head")
-    print("Database migrations applied.")
+    print("数据库迁移已应用。")

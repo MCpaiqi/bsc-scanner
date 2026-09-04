@@ -1,6 +1,5 @@
-# Deployment
+# 部署说明
 
-Copy `.env.example` to `.env`, review the values, and start PostgreSQL and Redis with `docker compose up -d postgres redis`. The app container can then be started with `docker compose up app`.
+将 `.env.example` 复制为 `.env`，检查配置后执行 `docker compose up -d postgres redis` 启动 PostgreSQL 和 Redis。随后可执行 `docker compose up app` 启动应用容器。
 
-Never commit `.env` or place private keys in source code or logs. Live trading is disabled in Phase 0.
-
+禁止提交 `.env`，也不要把私钥写入源代码或日志。实盘交易保持禁用。生产数据库升级必须在线执行 Alembic 迁移前置检查；离线生成的 SQL 不会执行数据检查。

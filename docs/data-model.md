@@ -1,29 +1,29 @@
-# Data Model
+# 数据模型
 
-Phase 1 persists the research data needed by later ingestion, scoring, signal, backtest, and paper-trading phases. Phase 4 extends the model for multiple chains and launchpads, including canonical `TradeEvent`, `TokenLifecycleEvent`, wallet-performance snapshots, and smart-money score history. All timestamps use timezone-aware UTC values. Monetary values are `NUMERIC`, never floating point; chain amounts retain raw integer-compatible and normalized columns.
+Phase 1 保存后续数据摄取、评分、信号、回测和模拟交易所需的研究数据。Phase 4 将模型扩展到多链和多发射平台，加入规范的 `TradeEvent`、`TokenLifecycleEvent`、钱包表现快照和聪明钱评分历史。所有时间戳均为带时区的 UTC；金额使用 `NUMERIC`，禁止使用浮点数；链上金额同时保留可兼容原始整数和标准化值的字段。
 
-| Table | Responsibility | Idempotency / key |
+| 数据表 | 职责 | 幂等键 / 主查询键 |
 | --- | --- | --- |
-| `tokens` | Chain/launchpad token profile, lifecycle, and market snapshots | `(chain, address)` |
-| `wallets` | Wallet profile and aggregate metrics | `(chain, address)` |
-| `wallet_transactions` | Normalized wallet transaction / swap records | `(wallet_id, signature)` |
-| `token_wallet_events` | Token-scoped buy, sell, transfer, and LP events | Indexed by token/wallet and time |
-| `wallet_scores` | Immutable wallet-score history | `(wallet_id, timestamp, version)` |
-| `token_scores` | Immutable token-score history | `(token_id, timestamp, version)` |
-| `signals` | Explainable research signals | Indexed by token and creation time |
-| `paper_trades` | Future simulated trade ledger | Links token and optional signal |
-| `raw_chain_records` | Source payload preservation | `(provider, record_type, external_id)` |
-| `trade_events` | Canonical chain/launchpad-neutral BUY and SELL events | `(chain, tx_hash, event_index)` |
-| `token_lifecycle_events` | Canonical token creation and lifecycle transitions | `(chain, tx_hash, event_index)` |
-| `wallet_token_performance` | Point-in-time wallet/token outcomes | `(chain, wallet_address, token_address)` |
-| `wallet_performance` | Point-in-time cross-token wallet aggregates | `(chain, wallet_address, as_of)` |
-| `smart_money_scores` | Explainable, versioned wallet scores | `(chain, wallet_address, as_of, version)` |
-| `ingestion_runs` | Ingestion observability | Run identifier |
+| `tokens` | 链/发射平台维度的 Token 档案、生命周期和市场快照 | `(chain, address)` |
+| `wallets` | 钱包档案和聚合指标 | `(chain, address)` |
+| `wallet_transactions` | 标准化钱包交易 / swap | `(wallet_id, signature)` |
+| `token_wallet_events` | Token 维度的买入、卖出、转账和 LP 事件 | 按 Token、钱包和时间建立索引 |
+| `wallet_scores` | 不可变的钱包评分历史 | `(wallet_id, timestamp, version)` |
+| `token_scores` | 不可变的 Token 评分历史 | `(token_id, timestamp, version)` |
+| `signals` | 可解释研究信号 | 按 Token 和创建时间建立索引 |
+| `paper_trades` | 未来的模拟交易账本 | 关联 Token 和可选信号 |
+| `raw_chain_records` | 保存来源原始数据 | `(provider, record_type, external_id)` |
+| `trade_events` | 跨链/发射平台统一的 BUY、SELL 事件 | `(chain, tx_hash, event_index)` |
+| `token_lifecycle_events` | 规范 Token 创建和生命周期变化 | `(chain, tx_hash, event_index)` |
+| `wallet_token_performance` | 时间点一致的钱包/Token 表现 | `(chain, wallet_address, token_address)` |
+| `wallet_performance` | 时间点一致的跨 Token 钱包聚合 | `(chain, wallet_address, as_of)` |
+| `smart_money_scores` | 可解释、带版本的钱包评分 | `(chain, wallet_address, as_of, version)` |
+| `ingestion_runs` | 数据摄取可观测性 | 运行标识 |
 
-`raw_chain_records` retains the source payload independently from normalized transaction/event rows. Future normalization must reference source identifiers in metadata and must never overwrite source payloads. EVM event identity is the transaction hash plus receipt log index; a transaction may contain more than one trade or lifecycle log.
+`raw_chain_records` 独立于标准化交易/事件记录保存来源数据。后续标准化结果必须在元数据中引用来源标识，且不得覆盖原始 payload。EVM 事件身份由交易哈希和回执日志索引共同确定；同一交易可以包含多个交易事件或生命周期事件。
 
-## Migrations
+## 数据库迁移
 
-Apply the schema with `python scripts/init_db.py`, which runs the Alembic head
-(`20260904_0006` currently). Production schema changes must add a new Alembic
-revision; do not call `Base.metadata.create_all` against a production database.
+运行 `python scripts/init_db.py` 应用当前 Alembic head（目前为 `20260904_0006`）。生产环境的结构变更必须新增 Alembic revision，禁止直接对生产数据库调用 `Base.metadata.create_all`。
+
+`20260904_0006` 不会为历史生命周期记录伪造 `event_index=0`。在线迁移发现旧数据时会拒绝继续，必须先依据原始回执人工回填身份。离线 `--sql` 模式只生成 SQL，不执行该前置数据检查。

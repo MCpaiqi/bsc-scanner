@@ -1,4 +1,4 @@
-"""General curve facts verified from Flap documentation."""
+"""从 Flap 官方文档验证的通用曲线事实。"""
 
 from dataclasses import dataclass
 from decimal import Decimal

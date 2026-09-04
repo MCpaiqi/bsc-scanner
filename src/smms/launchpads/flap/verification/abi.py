@@ -1,4 +1,4 @@
-"""Verification metadata for the currently known Flap event ABI surface."""
+"""当前已知 Flap 事件 ABI 的验证元数据。"""
 
 from collections.abc import Mapping
 from dataclasses import dataclass

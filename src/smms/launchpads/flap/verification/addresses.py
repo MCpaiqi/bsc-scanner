@@ -1,4 +1,4 @@
-"""Verified Flap contract address records."""
+"""已验证的 Flap 合约地址记录。"""
 
 import re
 from dataclasses import dataclass
