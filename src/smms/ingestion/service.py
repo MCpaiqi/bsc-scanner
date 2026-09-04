@@ -10,14 +10,20 @@ from smms.normalization import normalize_token, normalize_transaction
 class IngestionService:
     """Persist authoritative provider payloads exactly once and return normalized views."""
 
-    def __init__(self, provider: DataProvider, session: AsyncSession):
+    def __init__(
+        self,
+        provider: DataProvider,
+        session: AsyncSession,
+        provider_name: str | None = None,
+    ):
         self.provider = provider
         self.session = session
+        self.provider_name = provider_name or type(provider).__name__
 
     async def fetch_token(self, token_address: str) -> dict[str, Any]:
         raw = await self.provider.get_token(token_address)
         await AsyncRawChainRecordRepository(self.session).add_idempotent(
-            "provider", "token", token_address, dict(raw)
+            self.provider_name, "token", token_address, dict(raw)
         )
         await self.session.flush()
         return normalize_token(raw)
@@ -30,7 +36,7 @@ class IngestionService:
             if not signature:
                 continue
             await AsyncRawChainRecordRepository(self.session).add_idempotent(
-                "provider", "transaction", signature, dict(raw)
+                self.provider_name, "transaction", signature, dict(raw)
             )
             normalized.append(normalize_transaction(raw))
         await self.session.flush()
