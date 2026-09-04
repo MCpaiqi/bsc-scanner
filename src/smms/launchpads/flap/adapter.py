@@ -116,8 +116,12 @@ class FlapAdapter:
                 if transaction.block_number is not None
                 else resolved_receipt.block_number
             )
-            block = await self.provider.get_block(block_number, include_transactions=False)
-            timestamp = block.timestamp if block is not None else None
+            get_block_timestamp = getattr(self.provider, "get_block_timestamp", None)
+            if callable(get_block_timestamp):
+                timestamp = await get_block_timestamp(block_number)
+            else:
+                block = await self.provider.get_block(block_number, include_transactions=False)
+                timestamp = block.timestamp if block is not None else None
 
         return (
             self.decode_trades(transaction, resolved_receipt, timestamp=timestamp),

@@ -186,8 +186,7 @@ class TokenLifecycleEvent(Base):
     __tablename__ = "token_lifecycle_events"
     __table_args__ = (
         UniqueConstraint(
-            "chain", "token_address", "event_type", "timestamp", "tx_hash",
-            name="uq_token_lifecycle_identity",
+            "chain", "tx_hash", "event_index", name="uq_token_lifecycle_chain_tx_index"
         ),
         Index("ix_token_lifecycle_events_token_time", "token_address", "timestamp"),
         Index("ix_token_lifecycle_events_launchpad_time", "launchpad", "timestamp"),
@@ -199,8 +198,9 @@ class TokenLifecycleEvent(Base):
     token_address: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     event_type: Mapped[str] = mapped_column(String(32), nullable=False)
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
-    tx_hash: Mapped[str | None] = mapped_column(String(128))
+    tx_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     block_number: Mapped[int | None] = mapped_column(BigInteger)
+    event_index: Mapped[int] = mapped_column(default=0, nullable=False)
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
 

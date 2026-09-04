@@ -96,10 +96,12 @@ async def test_bsc_provider_normalizes_blocks_transactions_receipts_and_logs() -
     assert block.timestamp.tzinfo is UTC
     assert block.timestamp == datetime.fromtimestamp(0x65A00000, tz=UTC)
     assert block.transactions[0].value == Decimal("0.1")
+    assert block.transactions[0].timestamp == block.timestamp
     assert transaction is not None
     assert transaction.transaction_hash == "0xTx"
     assert receipt is not None
     assert receipt.logs[0].log_index == 2
+    assert receipt.logs[0].timestamp == block.timestamp
     assert logs[0].transaction_hash == "0xTx"
     assert methods == [
         "eth_blockNumber",

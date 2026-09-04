@@ -11,6 +11,20 @@ def test_defaults_are_paper_first() -> None:
     assert settings.enable_live_trading is False
     assert settings.bsc_chain_id == 56
     assert settings.bsc_rpc_url is None
+    assert settings.bsc_rpc_endpoints == ()
+
+
+def test_bsc_rpc_operational_limits_and_endpoint_failover_are_configurable() -> None:
+    settings = Settings(
+        _env_file=None,
+        BSC_RPC_URLS="https://one.example, https://two.example",
+        BSC_LOG_CHUNK_SIZE=500,
+        BSC_RPC_MAX_RETRIES=1,
+    )
+
+    assert settings.bsc_rpc_endpoints == ("https://one.example", "https://two.example")
+    assert settings.bsc_log_chunk_size == 500
+    assert settings.bsc_rpc_max_retries == 1
 
 
 def test_live_mode_requires_two_explicit_guards() -> None:

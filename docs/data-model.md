@@ -14,14 +14,16 @@ Phase 1 persists the research data needed by later ingestion, scoring, signal, b
 | `paper_trades` | Future simulated trade ledger | Links token and optional signal |
 | `raw_chain_records` | Source payload preservation | `(provider, record_type, external_id)` |
 | `trade_events` | Canonical chain/launchpad-neutral BUY and SELL events | `(chain, tx_hash, event_index)` |
-| `token_lifecycle_events` | Canonical token creation and lifecycle transitions | Token/time indexes plus source identity |
+| `token_lifecycle_events` | Canonical token creation and lifecycle transitions | `(chain, tx_hash, event_index)` |
 | `wallet_token_performance` | Point-in-time wallet/token outcomes | `(chain, wallet_address, token_address)` |
 | `wallet_performance` | Point-in-time cross-token wallet aggregates | `(chain, wallet_address, as_of)` |
 | `smart_money_scores` | Explainable, versioned wallet scores | `(chain, wallet_address, as_of, version)` |
 | `ingestion_runs` | Ingestion observability | Run identifier |
 
-`raw_chain_records` retains the source payload independently from normalized transaction/event rows. Future normalization must reference source identifiers in metadata and must never overwrite source payloads.
+`raw_chain_records` retains the source payload independently from normalized transaction/event rows. Future normalization must reference source identifiers in metadata and must never overwrite source payloads. EVM event identity is the transaction hash plus receipt log index; a transaction may contain more than one trade or lifecycle log.
 
 ## Migrations
 
-Apply the initial schema with `python scripts/init_db.py`, which runs Alembic revision `20260904_0001`. Production schema changes must add a new Alembic revision; do not call `Base.metadata.create_all` against a production database.
+Apply the schema with `python scripts/init_db.py`, which runs the Alembic head
+(`20260904_0006` currently). Production schema changes must add a new Alembic
+revision; do not call `Base.metadata.create_all` against a production database.

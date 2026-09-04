@@ -10,7 +10,6 @@ from smms.ingestion import DataUnavailable
 
 from ._decoding import (
     address_field,
-    decimal_value,
     integer_field,
     log_matches,
     raw_log,
@@ -98,17 +97,19 @@ class FlapTradeDecoder:
                 if native_amount is not None and token_amount not in (None, Decimal(0))
                 else None
             )
-            market_cap = self._optional_data_value(
+            price_value = self._optional_data_value(
                 log,
                 self.config.trade_price_data_index,
                 "price",
                 decimals=self.config.price_decimals,
             )
-            if market_cap is not None:
-                price = market_cap
+            if price_value is not None:
+                price = price_value
             market_cap_value = self._optional_data_value(
-                log, self.config.trade_market_cap_data_index, "market cap"
-                , decimals=self.config.market_cap_decimals
+                log,
+                self.config.trade_market_cap_data_index,
+                "market cap",
+                decimals=self.config.market_cap_decimals,
             )
             liquidity = self._optional_data_value(
                 log,
@@ -116,13 +117,16 @@ class FlapTradeDecoder:
                 "liquidity",
                 decimals=self.config.liquidity_decimals,
             )
+            tx_hash = log.transaction_hash or receipt.transaction_hash or transaction.transaction_hash
+            if not tx_hash:
+                raise DataUnavailable("Flap trade log does not contain a transaction hash")
             events.append(
                 TradeEvent(
                     chain=self.config.chain,
                     launchpad=self.config.launchpad,
                     token_address=token_address,
                     trader_address=trader_address,
-                    tx_hash=log.transaction_hash or receipt.transaction_hash or transaction.transaction_hash,
+                    tx_hash=tx_hash,
                     block_number=(
                         log.block_number
                         if log.block_number is not None
@@ -142,8 +146,20 @@ class FlapTradeDecoder:
                     event_index=log.log_index,
                     source=self.config.source,
                     metadata_json={
-                        "source_external_id": f"{log.transaction_hash}:{log.log_index}",
+                        "source_external_id": f"{tx_hash}:{log.log_index}",
+                        "raw_record": {
+                            "provider": self.config.source,
+                            "record_type": "log",
+                            "external_id": f"{tx_hash}:{log.log_index}",
+                        },
                         "event_topic": log.topics[0] if log.topics else None,
+                        "evidence_level": "VERIFIED",
+                        "source": self.config.source,
+                        "price_evidence_level": (
+                            "VERIFIED"
+                            if price_value is not None
+                            else ("DERIVED" if price is not None else "UNKNOWN")
+                        ),
                         "token_amount_raw": token_raw,
                         "native_amount_raw": native_raw,
                         "log": raw_log(log),
@@ -183,6 +199,16 @@ class FlapTradeDecoder:
             raise DataUnavailable("Flap trade trader selector is not configured")
         if not has_token_selector:
             raise DataUnavailable("Flap trade token selector is not configured")
+        if (
+            self.config.trade_token_amount_topic_index is None
+            and self.config.trade_token_amount_data_index is None
+        ):
+            raise DataUnavailable("Flap trade token amount selector is not configured")
+        if (
+            self.config.trade_native_amount_topic_index is None
+            and self.config.trade_native_amount_data_index is None
+        ):
+            raise DataUnavailable("Flap trade native amount selector is not configured")
 
     def _side_for_log(self, log: ChainLog) -> TradeSide | None:
         if not log_matches(
@@ -241,7 +267,7 @@ class FlapTradeDecoder:
             return None
         value = integer_field(log, topic_index=None, data_index=index, field=field)
         if decimals is None:
-            return decimal_value(value, field=field)
+            raise DataUnavailable(f"Flap {field} decimals are not configured; VERIFY_ON_CHAIN")
         return scaled(value, decimals, field=field)
 
     @staticmethod

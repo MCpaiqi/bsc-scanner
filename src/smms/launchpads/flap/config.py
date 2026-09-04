@@ -5,10 +5,21 @@ field positions outside of code.  Flap's on-chain details must be verified by
 the caller before a configuration is enabled.
 """
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
+
+_EVM_ADDRESS_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+_EVM_TOPIC_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
+_VERIFICATION_STATUSES = {
+    "VERIFIED",
+    "DERIVED",
+    "INFERRED",
+    "UNKNOWN",
+    "VERIFY_ON_CHAIN",
+}
 
 
 def _optional_text(value: Any) -> str | None:
@@ -32,6 +43,22 @@ def _optional_index(value: Any, *, name: str) -> int | None:
     return index
 
 
+def _optional_decimals(value: Any, *, name: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise TypeError(f"{name} must be between 0 and 255")
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be between 0 and 255") from exc
+    if normalized != value and isinstance(value, float):
+        raise ValueError(f"{name} must be an integer between 0 and 255")
+    if not 0 <= normalized <= 255:
+        raise ValueError(f"{name} must be between 0 and 255")
+    return normalized
+
+
 @dataclass(frozen=True)
 class FlapConfig:
     """Explicit selectors and scaling used by the Flap adapter.
@@ -45,6 +72,7 @@ class FlapConfig:
     launchpad: str = "FLAP"
     enabled: bool = True
     source: str = "bsc_rpc:flap"
+    verification_status: str = "VERIFY_ON_CHAIN"
 
     factory_address: str | None = None
     portal_address: str | None = None
@@ -93,6 +121,8 @@ class FlapConfig:
     lifecycle_token_data_index: int | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.enabled, bool):
+            raise TypeError("enabled must be a boolean")
         chain = _optional_text(self.chain)
         launchpad = _optional_text(self.launchpad)
         source = _optional_text(self.source)
@@ -105,6 +135,17 @@ class FlapConfig:
         object.__setattr__(self, "chain", chain.lower())
         object.__setattr__(self, "launchpad", launchpad.upper())
         object.__setattr__(self, "source", source)
+
+        verification_status = _optional_text(self.verification_status)
+        if not verification_status:
+            raise ValueError("verification_status is required")
+        verification_status = verification_status.upper()
+        if verification_status not in _VERIFICATION_STATUSES:
+            allowed = ", ".join(sorted(_VERIFICATION_STATUSES))
+            raise ValueError(
+                f"verification_status must be one of {allowed}"
+            )
+        object.__setattr__(self, "verification_status", verification_status)
 
         text_fields = {
             field.name
@@ -126,22 +167,17 @@ class FlapConfig:
             object.__setattr__(self, name, _optional_index(getattr(self, name), name=name))
 
         for name in (
+            "token_decimals",
+            "native_decimals",
             "price_decimals",
             "market_cap_decimals",
             "liquidity_decimals",
         ):
-            value = getattr(self, name)
-            if value is None:
-                continue
-            if isinstance(value, bool):
-                raise TypeError(f"{name} must be between 0 and 255")
-            try:
-                value = int(value)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"{name} must be between 0 and 255") from exc
-            if not 0 <= value <= 255:
-                raise ValueError(f"{name} must be between 0 and 255")
-            object.__setattr__(self, name, value)
+            object.__setattr__(
+                self,
+                name,
+                _optional_decimals(getattr(self, name), name=name),
+            )
 
         for name in ("trade_buy_side_value", "trade_sell_side_value"):
             value = getattr(self, name)
@@ -169,6 +205,67 @@ class FlapConfig:
                 raise ValueError("default_trade_side must be BUY or SELL")
             object.__setattr__(self, "default_trade_side", side)
 
+    def validate_runtime(self) -> None:
+        """Reject malformed EVM selectors before an enabled ingestion run.
+
+        Direct decoder tests may use short fixture labels, so this check is
+        deliberately applied by the production ingestion boundary rather than
+        by the immutable config constructor itself.
+        """
+
+        if not self.enabled:
+            raise ValueError("Flap configuration is disabled")
+        if self.verification_status != "VERIFIED":
+            raise ValueError(
+                "Flap configuration verification_status must be VERIFIED; "
+                f"currently {self.verification_status}"
+            )
+
+        for name in (
+            "factory_address",
+            "portal_address",
+            "router_address",
+            "bonding_curve_address",
+            "creation_contract_address",
+            "trade_contract_address",
+            "lifecycle_contract_address",
+        ):
+            value = getattr(self, name)
+            if value is not None and not _EVM_ADDRESS_RE.fullmatch(value):
+                raise ValueError(f"{name} must be a 20-byte EVM address")
+        for name in (
+            "creation_event_topic",
+            "buy_event_topic",
+            "sell_event_topic",
+            "trade_event_topic",
+            "trading_started_event_topic",
+            "near_graduation_event_topic",
+            "graduation_event_topic",
+            "dex_listed_event_topic",
+        ):
+            value = getattr(self, name)
+            if value is not None and not _EVM_TOPIC_RE.fullmatch(value):
+                raise ValueError(f"{name} must be a 32-byte event topic")
+        if self.creation_event_topic and not self.factory_address:
+            raise ValueError("factory_address is required when creation_event_topic is configured")
+        if (
+            self.buy_event_topic
+            or self.sell_event_topic
+            or self.trade_event_topic
+        ) and not self.trade_contract_address:
+            raise ValueError("trade_contract_address is required when trade topics are configured")
+        if any(
+            (
+                self.trading_started_event_topic,
+                self.near_graduation_event_topic,
+                self.graduation_event_topic,
+                self.dex_listed_event_topic,
+            )
+        ) and not self.lifecycle_contract_address:
+            raise ValueError(
+                "lifecycle_contract_address is required when lifecycle topics are configured"
+            )
+
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, Any]) -> "FlapConfig":
         """Build a config from a full YAML mapping or a Flap subsection."""
@@ -187,6 +284,13 @@ class FlapConfig:
         for name in valid_names:
             if name in root:
                 values[name] = root[name]
+        verification = root.get("verification")
+        if (
+            "verification_status" not in values
+            and isinstance(verification, Mapping)
+            and "status" in verification
+        ):
+            values["verification_status"] = verification["status"]
         return cls(**values)
 
     @classmethod

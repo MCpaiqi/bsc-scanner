@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.exc import StatementError
 from sqlalchemy.orm import Session
 
@@ -66,6 +66,41 @@ def test_phase4_alembic_revisions_upgrade_and_downgrade(tmp_path, monkeypatch) -
     get_settings.cache_clear()
 
 
+def test_lifecycle_identity_migration_requires_manual_legacy_backfill(tmp_path, monkeypatch) -> None:
+    database_path = (tmp_path / "legacy-migration.db").as_posix()
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path}")
+    get_settings.cache_clear()
+    config = Config("alembic.ini")
+    try:
+        command.upgrade(config, "20260904_0005")
+        engine = create_engine(f"sqlite:///{database_path}")
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO token_lifecycle_events "
+                    "(chain, launchpad, token_address, event_type, timestamp, "
+                    "tx_hash, block_number, payload_json) "
+                    "VALUES (:chain, :launchpad, :token, :event_type, :timestamp, "
+                    ":tx_hash, :block_number, :payload)"
+                ),
+                {
+                    "chain": "bsc",
+                    "launchpad": "FLAP",
+                    "token": "0xToken",
+                    "event_type": "CREATED",
+                    "timestamp": "2026-01-01 00:00:00",
+                    "tx_hash": "0xTx",
+                    "block_number": 1,
+                    "payload": "{}",
+                },
+            )
+
+        with pytest.raises(RuntimeError, match="refuses to invent"):
+            command.upgrade(config, "head")
+    finally:
+        get_settings.cache_clear()
+
+
 def test_token_and_trade_event_capture_chain_launchpad_lifecycle_context() -> None:
     token = Token(
         address="0xToken",
@@ -121,6 +156,39 @@ def test_trade_event_rejects_non_canonical_side() -> None:
         )
         with pytest.raises((StatementError, ValueError)):
             session.commit()
+
+
+def test_lifecycle_event_identity_includes_log_index() -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    timestamp = datetime(2026, 1, 1, tzinfo=UTC)
+    with Session(engine) as session:
+        session.add_all(
+            [
+                TokenLifecycleEvent(
+                    chain="bsc",
+                    launchpad="FLAP",
+                    token_address="0xToken",
+                    event_type="PROGRESS",
+                    timestamp=timestamp,
+                    tx_hash="0xTx",
+                    block_number=123,
+                    event_index=1,
+                ),
+                TokenLifecycleEvent(
+                    chain="bsc",
+                    launchpad="FLAP",
+                    token_address="0xToken",
+                    event_type="PROGRESS",
+                    timestamp=timestamp,
+                    tx_hash="0xTx",
+                    block_number=123,
+                    event_index=2,
+                ),
+            ]
+        )
+        session.commit()
+        assert session.query(TokenLifecycleEvent).count() == 2
 
 
 def test_smart_money_score_is_weighted_explainable_and_penalizes_risk() -> None:

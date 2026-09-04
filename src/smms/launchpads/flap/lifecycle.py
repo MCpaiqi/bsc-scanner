@@ -95,6 +95,9 @@ class FlapLifecycleDecoder:
                 timestamp or transaction.timestamp or log.timestamp,
                 field="lifecycle timestamp",
             )
+            tx_hash = log.transaction_hash or receipt.transaction_hash or transaction.transaction_hash
+            if not tx_hash:
+                raise DataUnavailable("Flap lifecycle log does not contain a transaction hash")
             events.append(
                 TokenLifecycleEvent(
                     chain=self.config.chain,
@@ -102,7 +105,7 @@ class FlapLifecycleDecoder:
                     token_address=token_address,
                     event_type=event_type,
                     timestamp=event_timestamp,
-                    tx_hash=log.transaction_hash or receipt.transaction_hash or transaction.transaction_hash,
+                    tx_hash=tx_hash,
                     block_number=(
                         log.block_number
                         if log.block_number is not None
@@ -112,9 +115,17 @@ class FlapLifecycleDecoder:
                             else receipt.block_number
                         )
                     ),
+                    event_index=log.log_index,
                     payload_json={
-                        "source_external_id": f"{log.transaction_hash}:{log.log_index}",
+                        "source_external_id": f"{tx_hash}:{log.log_index}",
+                        "raw_record": {
+                            "provider": self.config.source,
+                            "record_type": "log",
+                            "external_id": f"{tx_hash}:{log.log_index}",
+                        },
                         "event_topic": log.topics[0] if log.topics else None,
+                        "evidence_level": "VERIFIED",
+                        "source": self.config.source,
                         "log": raw_log(log),
                     },
                 )

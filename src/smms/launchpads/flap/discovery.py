@@ -51,14 +51,17 @@ class FlapTokenDiscovery:
             address=self.config.factory_address,
             topics=(self.config.creation_event_topic,),
         )
-        ordered = sorted(logs, key=lambda item: (item.block_number, item.log_index))
-        for log in ordered:
+        unique: dict[tuple[str, int], ChainLog] = {}
+        for log in logs:
             if not log_matches(
                 log,
                 address=self.config.factory_address,
                 topic=self.config.creation_event_topic,
             ):
                 continue
+            unique[(log.transaction_hash.lower(), log.log_index)] = log
+        ordered = sorted(unique.values(), key=lambda item: (item.block_number, item.log_index))
+        for log in ordered:
             yield await self._decode_log(log)
 
     def _validate_config(self) -> None:
@@ -96,8 +99,12 @@ class FlapTokenDiscovery:
             raise DataUnavailable("Flap creation log does not contain token and creator addresses")
         timestamp = log.timestamp
         if timestamp is None:
-            block = await self.provider.get_block(log.block_number, include_transactions=False)
-            timestamp = block.timestamp if block is not None else None
+            get_block_timestamp = getattr(self.provider, "get_block_timestamp", None)
+            if callable(get_block_timestamp):
+                timestamp = await get_block_timestamp(log.block_number)
+            else:
+                block = await self.provider.get_block(log.block_number, include_transactions=False)
+                timestamp = block.timestamp if block is not None else None
         created_at = utc_timestamp(timestamp, field="creation block timestamp")
         return LaunchpadTokenDiscovery(
             chain=self.config.chain,
@@ -109,6 +116,12 @@ class FlapTokenDiscovery:
             creation_block=log.block_number,
             raw={
                 "source_external_id": f"{log.transaction_hash}:{log.log_index}",
+                "raw_record": {
+                    "provider": self.config.source,
+                    "record_type": "log",
+                    "external_id": f"{log.transaction_hash}:{log.log_index}",
+                },
+                "evidence_level": "VERIFIED",
                 "log": raw_log(log),
             },
         )

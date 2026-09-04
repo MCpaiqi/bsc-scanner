@@ -10,11 +10,27 @@ chains:
 launchpads:
   flap:
     enabled: false
-    # Contract addresses and event selectors remain unset until verified on-chain.
+    verification:
+      status: VERIFY_ON_CHAIN
+    # Portal and event layouts below are verified; creation/trade emitter roles
+    # remain unset until their real receipt addresses are confirmed.
     factory_address: null # VERIFY_ON_CHAIN
-    portal_address: null # VERIFY_ON_CHAIN
+    portal_address: "0xe2cE6ab80874Fa9Fa2aAE65D277Dd6B8e65C9De0"
     router_address: null # VERIFY_ON_CHAIN
     bonding_curve_address: null # VERIFY_ON_CHAIN
+    creation_event_topic: "0x504e7f360b2e5fe33cbaaae4c593bc55305328341bf79009e43e0e3b7f699603"
+    creation_token_data_index: 3
+    creation_creator_data_index: 1
+    buy_event_topic: "0xa800a2038683844fac66747f771bfdfae862eb28b16bcfa387afa9fbacce8ff7"
+    sell_event_topic: "0x03a4693e592f5e75dc7c136acb39b146d2b4966c0e509c34f362dee02b3b861a"
+    trade_token_data_index: 1
+    trade_trader_data_index: 2
+    trade_token_amount_data_index: 3
+    trade_native_amount_data_index: 4
+    trade_price_data_index: 6
+    token_decimals: 18
+    native_decimals: 18
+    price_decimals: null # VERIFY_ON_CHAIN
 
 historical_winner:
   min_multiple: 50

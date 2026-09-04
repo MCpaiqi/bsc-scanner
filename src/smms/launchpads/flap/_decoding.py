@@ -35,6 +35,8 @@ def address_from_topic(value: str) -> str:
         int(body, 16)
     except ValueError as exc:
         raise DataUnavailable("Flap address topic is not hexadecimal") from exc
+    if body[:24] != "0" * 24:
+        raise DataUnavailable("Flap address topic has non-zero ABI padding")
     return "0x" + body[-40:]
 
 

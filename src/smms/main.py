@@ -1,16 +1,156 @@
+"""Command-line entry points for the research-only application."""
+
 import argparse
+import asyncio
+import json
+from collections.abc import Sequence
+from pathlib import Path
+
+from smms.chains.bsc import BSCProvider
+from smms.config import get_settings
+from smms.db.database import session_scope
+from smms.ingestion import DataUnavailable
+from smms.ingestion.flap import FlapHistoricalIngestionService
+from smms.launchpads.flap import FlapConfig
 
 
-def cli() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="smms")
-    parser.add_argument("command", choices=["health", "init-db", "ingest", "scan", "backtest", "paper"])
-    args = parser.parse_args()
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    commands.add_parser("health")
+    for name in ("init-db", "ingest", "scan", "backtest", "paper"):
+        commands.add_parser(name)
+
+    discover = commands.add_parser("discover")
+    discover_commands = discover.add_subparsers(dest="launchpad", required=True)
+    discover_flap = discover_commands.add_parser("flap")
+    _add_block_range(discover_flap)
+    discover_flap.add_argument(
+        "--config", type=Path, default=Path("configs/sources.yaml"), help="Flap YAML configuration"
+    )
+
+    backfill = commands.add_parser("backfill")
+    backfill_commands = backfill.add_subparsers(dest="launchpad", required=True)
+    backfill_flap = backfill_commands.add_parser("flap")
+    backfill_flap.add_argument("--token", required=True)
+    _add_block_range(backfill_flap)
+    backfill_flap.add_argument(
+        "--config", type=Path, default=Path("configs/sources.yaml"), help="Flap YAML configuration"
+    )
+
+    return parser
+
+
+def _add_block_range(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--from-block", type=int)
+    parser.add_argument("--to-block", type=int)
+
+
+def _require_block_range(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if args.from_block is None or args.to_block is None:
+        parser.error("--from-block and --to-block are required for bounded historical scans")
+
+
+def _load_flap_config(path: Path) -> FlapConfig:
+    config = FlapConfig.from_yaml(path)
+    if not config.enabled:
+        raise DataUnavailable("Flap configuration is disabled; complete on-chain verification first")
+    try:
+        config.validate_runtime()
+    except ValueError as exc:
+        raise DataUnavailable(str(exc)) from exc
+    return config
+
+
+async def run_discover_flap(
+    *,
+    provider: BSCProvider,
+    config: FlapConfig,
+    from_block: int,
+    to_block: int,
+) -> list[dict[str, object]]:
+    service = FlapHistoricalIngestionService(provider, config)
+    records = await service.discover_tokens(from_block=from_block, to_block=to_block)
+    return [
+        {
+            "chain": record.chain,
+            "launchpad": record.launchpad,
+            "token_address": record.token_address,
+            "creator_address": record.creator_address,
+            "created_at": record.created_at.isoformat(),
+            "creation_tx_hash": record.creation_tx_hash,
+            "creation_block": record.creation_block,
+        }
+        for record in records
+    ]
+
+
+async def run_backfill_flap(
+    *,
+    provider: BSCProvider,
+    config: FlapConfig,
+    token_address: str,
+    from_block: int,
+    to_block: int,
+) -> str:
+    settings = get_settings()
+    async with session_scope(settings) as session:
+        result = await FlapHistoricalIngestionService(
+            provider,
+            config,
+            session=session,
+        ).backfill_token(
+            token_address,
+            from_block=from_block,
+            to_block=to_block,
+        )
+    return result.quality.render()
+
+
+def cli(argv: Sequence[str] | None = None) -> None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
     if args.command == "health":
         print("Use the API endpoint GET /health for dependency health.")
-    else:
+        return
+    if args.command in {"init-db", "ingest", "scan", "backtest", "paper"}:
         print(f"{args.command} is reserved for a later phase.")
+        return
+
+    try:
+        _require_block_range(parser, args)
+        config = _load_flap_config(args.config)
+        settings = get_settings()
+        provider = BSCProvider(settings)
+        if args.command == "discover":
+            records = asyncio.run(
+                run_discover_flap(
+                    provider=provider,
+                    config=config,
+                    from_block=args.from_block,
+                    to_block=args.to_block,
+                )
+            )
+            for record in records:
+                print(json.dumps(record, sort_keys=True))
+            return
+        if args.command == "backfill":
+            print(
+                asyncio.run(
+                    run_backfill_flap(
+                        provider=provider,
+                        config=config,
+                        token_address=args.token,
+                        from_block=args.from_block,
+                        to_block=args.to_block,
+                    )
+                )
+            )
+            return
+    except (DataUnavailable, OSError, ValueError) as exc:
+        parser.error(str(exc))
 
 
 if __name__ == "__main__":
     cli()
-

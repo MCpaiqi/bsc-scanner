@@ -35,4 +35,7 @@ The API exposes `GET /health`. External provider credentials are optional in Pha
 - Secrets belong in `.env` or an external secret manager; `.env` is ignored by Git.
 - UTC is used for all persisted timestamps.
 
-See `docs/architecture.md` and `docs/deployment.md` for the Phase 0 boundaries.
+See `docs/architecture.md`, `docs/PHASE_6_AUDIT.md`, and
+`docs/FLAP_ONCHAIN_VERIFICATION.md` for the current boundaries and evidence
+status. Historical Flap commands require an explicitly bounded block range and
+an enabled, verified configuration.

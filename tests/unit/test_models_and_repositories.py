@@ -7,11 +7,19 @@ from smms.db.models import (
     Base,
     Signal,
     Token,
+    TokenLifecycleEvent,
+    TradeEvent,
     Wallet,
     WalletScore,
     WalletTransaction,
 )
-from smms.db.repositories import TokenRepository, WalletRepository, WalletTransactionRepository
+from smms.db.repositories import (
+    TokenLifecycleEventRepository,
+    TokenRepository,
+    TradeEventRepository,
+    WalletRepository,
+    WalletTransactionRepository,
+)
 
 
 def test_phase_one_schema_contains_required_tables() -> None:
@@ -78,6 +86,71 @@ def test_wallet_transaction_insert_is_idempotent_by_wallet_signature() -> None:
         session.commit()
         assert second.id == first.id
         assert session.query(WalletTransaction).count() == 1
+
+
+def test_chain_event_repositories_are_idempotent_by_log_identity() -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    timestamp = datetime(2025, 1, 1, tzinfo=UTC)
+    with Session(engine) as session:
+        trade_repo = TradeEventRepository(session)
+        first_trade = trade_repo.add_idempotent(
+            TradeEvent(
+                chain="bsc",
+                launchpad="FLAP",
+                token_address="0xToken",
+                trader_address="0xWallet",
+                tx_hash="0xTx",
+                block_number=1,
+                timestamp=timestamp,
+                side="BUY",
+                source="fixture",
+                event_index=4,
+            )
+        )
+        second_trade = trade_repo.add_idempotent(
+            TradeEvent(
+                chain="bsc",
+                launchpad="FLAP",
+                token_address="0xToken",
+                trader_address="0xWallet",
+                tx_hash="0xTx",
+                block_number=1,
+                timestamp=timestamp,
+                side="BUY",
+                source="fixture",
+                event_index=4,
+            )
+        )
+        lifecycle_repo = TokenLifecycleEventRepository(session)
+        lifecycle = lifecycle_repo.add_idempotent(
+            TokenLifecycleEvent(
+                chain="bsc",
+                launchpad="FLAP",
+                token_address="0xToken",
+                event_type="GRADUATED",
+                timestamp=timestamp,
+                tx_hash="0xTx",
+                event_index=5,
+            )
+        )
+        same_lifecycle = lifecycle_repo.add_idempotent(
+            TokenLifecycleEvent(
+                chain="bsc",
+                launchpad="FLAP",
+                token_address="0xToken",
+                event_type="GRADUATED",
+                timestamp=timestamp,
+                tx_hash="0xTx",
+                event_index=5,
+            )
+        )
+        session.commit()
+
+        assert second_trade.id == first_trade.id
+        assert same_lifecycle.id == lifecycle.id
+        assert session.query(TradeEvent).count() == 1
+        assert session.query(TokenLifecycleEvent).count() == 1
 
 
 def test_score_and_signal_versions_are_persistable() -> None:

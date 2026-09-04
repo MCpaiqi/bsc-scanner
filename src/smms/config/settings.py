@@ -19,8 +19,13 @@ class Settings(BaseSettings):
     solana_rpc_url: str | None = Field(None, alias="SOLANA_RPC_URL")
     solana_ws_url: str | None = Field(None, alias="SOLANA_WS_URL")
     bsc_rpc_url: str | None = Field(None, alias="BSC_RPC_URL")
+    bsc_rpc_urls: str | None = Field(None, alias="BSC_RPC_URLS")
     bsc_ws_url: str | None = Field(None, alias="BSC_WS_URL")
     bsc_chain_id: int = Field(56, alias="BSC_CHAIN_ID", ge=1)
+    bsc_rpc_timeout_seconds: float = Field(10, alias="BSC_RPC_TIMEOUT_SECONDS", gt=0)
+    bsc_rpc_max_retries: int = Field(2, alias="BSC_RPC_MAX_RETRIES", ge=0)
+    bsc_rpc_retry_backoff_seconds: float = Field(0.25, alias="BSC_RPC_RETRY_BACKOFF_SECONDS", ge=0)
+    bsc_log_chunk_size: int = Field(10_000, alias="BSC_LOG_CHUNK_SIZE", gt=0)
     market_api_key: SecretStr | None = Field(None, alias="MARKET_API_KEY")
     dex_api_key: SecretStr | None = Field(None, alias="DEX_API_KEY")
     telegram_bot_token: SecretStr | None = Field(None, alias="TELEGRAM_BOT_TOKEN")
@@ -51,6 +56,13 @@ class Settings(BaseSettings):
     @property
     def is_paper_mode(self) -> bool:
         return self.trading_mode == "PAPER"
+
+    @property
+    def bsc_rpc_endpoints(self) -> tuple[str, ...]:
+        """Return configured BSC endpoints without exposing credentials."""
+
+        values = self.bsc_rpc_urls or self.bsc_rpc_url or ""
+        return tuple(value.strip() for value in values.split(",") if value.strip())
 
 
 @lru_cache
