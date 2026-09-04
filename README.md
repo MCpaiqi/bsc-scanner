@@ -12,6 +12,7 @@ python -m venv .venv
 pip install -e ".[dev]"
 Copy-Item .env.example .env
 docker compose up -d postgres redis
+python scripts/init_db.py
 pytest
 ```
 
@@ -31,4 +32,3 @@ The API exposes `GET /health`. External provider credentials are optional in Pha
 - UTC is used for all persisted timestamps.
 
 See `docs/architecture.md` and `docs/deployment.md` for the Phase 0 boundaries.
-
