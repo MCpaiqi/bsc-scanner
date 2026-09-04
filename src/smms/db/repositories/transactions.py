@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from smms.db.models import WalletTransaction
@@ -33,7 +34,14 @@ class WalletTransactionRepository:
                 signature=signature,
                 timestamp=timestamp,
             )
-            self.session.add(transaction)
+            try:
+                with self.session.begin_nested():
+                    self.session.add(transaction)
+                    self.session.flush()
+            except IntegrityError:
+                transaction = self.get_by_signature(wallet_id, signature)
+                if transaction is None:
+                    raise
         for key, value in values.items():
             if hasattr(WalletTransaction, key) and value is not None:
                 setattr(transaction, key, value)
@@ -48,4 +56,3 @@ class WalletTransactionRepository:
                 .limit(limit)
             )
         )
-

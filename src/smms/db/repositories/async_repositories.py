@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from smms.db.models import Token, Wallet, WalletTransaction
@@ -20,7 +21,14 @@ class AsyncTokenRepository:
         token = await self.get_by_address(address, chain)
         if token is None:
             token = Token(address=address, chain=chain)
-            self.session.add(token)
+            try:
+                async with self.session.begin_nested():
+                    self.session.add(token)
+                    await self.session.flush()
+            except IntegrityError:
+                token = await self.get_by_address(address, chain)
+                if token is None:
+                    raise
         for key, value in values.items():
             if hasattr(Token, key) and value is not None:
                 setattr(token, key, value)
@@ -41,7 +49,14 @@ class AsyncWalletRepository:
         wallet = await self.get_by_address(address, chain)
         if wallet is None:
             wallet = Wallet(address=address, chain=chain)
-            self.session.add(wallet)
+            try:
+                async with self.session.begin_nested():
+                    self.session.add(wallet)
+                    await self.session.flush()
+            except IntegrityError:
+                wallet = await self.get_by_address(address, chain)
+                if wallet is None:
+                    raise
         for key, value in values.items():
             if hasattr(Wallet, key) and value is not None:
                 setattr(wallet, key, value)
@@ -73,6 +88,21 @@ class AsyncWalletTransactionRepository:
                 timestamp=timestamp,
                 **values,
             )
-            self.session.add(transaction)
+            try:
+                async with self.session.begin_nested():
+                    self.session.add(transaction)
+                    await self.session.flush()
+            except IntegrityError:
+                transaction = await self.session.scalar(
+                    select(WalletTransaction).where(
+                        WalletTransaction.wallet_id == wallet_id,
+                        WalletTransaction.signature == signature,
+                    )
+                )
+                if transaction is None:
+                    raise
+        for key, value in values.items():
+            if hasattr(WalletTransaction, key) and value is not None:
+                setattr(transaction, key, value)
         await self.session.flush()
         return transaction

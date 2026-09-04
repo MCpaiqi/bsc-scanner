@@ -1,6 +1,7 @@
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from smms.db.models import Wallet
@@ -19,7 +20,14 @@ class WalletRepository:
         wallet = self.get_by_address(address, chain)
         if wallet is None:
             wallet = Wallet(address=address, chain=chain)
-            self.session.add(wallet)
+            try:
+                with self.session.begin_nested():
+                    self.session.add(wallet)
+                    self.session.flush()
+            except IntegrityError:
+                wallet = self.get_by_address(address, chain)
+                if wallet is None:
+                    raise
         for key, value in values.items():
             if hasattr(Wallet, key) and value is not None:
                 setattr(wallet, key, value)
@@ -31,4 +39,3 @@ class WalletRepository:
                 select(Wallet).order_by(Wallet.id).offset(offset).limit(limit)
             )
         )
-

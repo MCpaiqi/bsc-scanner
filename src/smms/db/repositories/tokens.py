@@ -1,6 +1,7 @@
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from smms.db.models import Token
@@ -19,7 +20,14 @@ class TokenRepository:
         token = self.get_by_address(address, chain)
         if token is None:
             token = Token(address=address, chain=chain)
-            self.session.add(token)
+            try:
+                with self.session.begin_nested():
+                    self.session.add(token)
+                    self.session.flush()
+            except IntegrityError:
+                token = self.get_by_address(address, chain)
+                if token is None:
+                    raise
         for key, value in values.items():
             if hasattr(Token, key) and value is not None:
                 setattr(token, key, value)
@@ -31,4 +39,3 @@ class TokenRepository:
                 select(Token).order_by(Token.id).offset(offset).limit(limit)
             )
         )
-

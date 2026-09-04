@@ -76,10 +76,14 @@ class Token(TimestampMixin, Base):
     top_holder_concentration: Mapped[Decimal | None] = mapped_column(Score)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
-    wallet_events: Mapped[list["TokenWalletEvent"]] = relationship(back_populates="token")
-    scores: Mapped[list["TokenScore"]] = relationship(back_populates="token")
-    signals: Mapped[list["Signal"]] = relationship(back_populates="token")
-    paper_trades: Mapped[list["PaperTrade"]] = relationship(back_populates="token")
+    wallet_events: Mapped[list["TokenWalletEvent"]] = relationship(
+        back_populates="token", passive_deletes=True
+    )
+    scores: Mapped[list["TokenScore"]] = relationship(back_populates="token", passive_deletes=True)
+    signals: Mapped[list["Signal"]] = relationship(back_populates="token", passive_deletes=True)
+    paper_trades: Mapped[list["PaperTrade"]] = relationship(
+        back_populates="token", passive_deletes=True
+    )
 
 
 class Wallet(TimestampMixin, Base):
@@ -102,9 +106,13 @@ class Wallet(TimestampMixin, Base):
     smart_money_score: Mapped[Decimal | None] = mapped_column(Score)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
-    transactions: Mapped[list["WalletTransaction"]] = relationship(back_populates="wallet")
-    token_events: Mapped[list["TokenWalletEvent"]] = relationship(back_populates="wallet")
-    scores: Mapped[list["WalletScore"]] = relationship(back_populates="wallet")
+    transactions: Mapped[list["WalletTransaction"]] = relationship(
+        back_populates="wallet", passive_deletes=True
+    )
+    token_events: Mapped[list["TokenWalletEvent"]] = relationship(
+        back_populates="wallet", passive_deletes=True
+    )
+    scores: Mapped[list["WalletScore"]] = relationship(back_populates="wallet", passive_deletes=True)
 
 
 class WalletTransaction(Base):

@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.orm import Session
 
 from smms.db.models import (
@@ -134,3 +134,28 @@ def test_raw_chain_records_have_provider_scoped_identity() -> None:
         except IntegrityError:
             session.rollback()
         assert session.query(RawChainRecord).count() == 1
+
+
+def test_database_cascade_removes_wallet_children() -> None:
+    engine = create_engine("sqlite://")
+    event.listen(
+        engine,
+        "connect",
+        lambda connection, _: connection.execute("PRAGMA foreign_keys=ON"),
+    )
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        wallet = Wallet(address="Wallet111", chain="solana")
+        session.add(wallet)
+        session.flush()
+        session.add(
+            WalletTransaction(
+                wallet_id=wallet.id,
+                signature="sig-1",
+                timestamp=datetime(2025, 1, 1, tzinfo=UTC),
+            )
+        )
+        session.commit()
+        session.delete(wallet)
+        session.commit()
+        assert session.query(WalletTransaction).count() == 0
