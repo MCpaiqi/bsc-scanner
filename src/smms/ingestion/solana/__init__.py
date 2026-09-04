@@ -1,2 +1,3 @@
-"""Solana RPC adapters."""
+from .rpc import SolanaRPCProvider
 
+__all__ = ["SolanaRPCProvider"]
