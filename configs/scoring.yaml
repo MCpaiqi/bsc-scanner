@@ -8,3 +8,15 @@ wallet:
   trade_quality: 5
   bot_penalty: 5
 
+smart_money:
+  # Weights are applied to point-in-time metrics only. Values are fractions.
+  win_rate: 0.20
+  roi: 0.20
+  early_entry: 0.20
+  high_multiple: 0.15
+  ath_capture: 0.10
+  consistency: 0.10
+  graduation: 0.05
+  rug_penalty: 0.10
+  bot_penalty: 0.10
+  wash_penalty: 0.10

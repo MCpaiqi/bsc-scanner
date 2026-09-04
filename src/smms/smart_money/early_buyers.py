@@ -18,6 +18,24 @@ class EarlyBuyer:
     total_buy_usd: Decimal
     entry_market_cap: Decimal | None
     tx_signature: str
+    token_address: str | None = None
+    token_age_at_buy_seconds: int | None = None
+    first_buy_market_cap: Decimal | None = None
+    first_buy_price: Decimal | None = None
+    first_buy_amount: Decimal | None = None
+    first_buy_usd: Decimal | None = None
+    buy_count: int = 1
+    sell_count: int = 0
+    total_buy: Decimal | None = None
+    total_sell: Decimal | None = None
+    realized_pnl: Decimal | None = None
+    unrealized_pnl: Decimal | None = None
+    max_unrealized_pnl: Decimal | None = None
+    pnl_at_ath: Decimal | None = None
+    holding_duration_seconds: int | None = None
+    sold_before_ath: bool | None = None
+    survived_to_graduation: bool | None = None
+    buy_rank: int | None = None
     is_bot: bool = False
     bot_probability: Decimal | None = None
     evidence: dict[str, Any] | None = None
@@ -68,6 +86,13 @@ def identify_early_buyers(
             total_buy_usd=amount_decimal,
             entry_market_cap=tx.get("market_cap"),
             tx_signature=signature,
+            token_address=token_address,
+            token_age_at_buy_seconds=int((timestamp - created).total_seconds()),
+            first_buy_market_cap=tx.get("market_cap"),
+            first_buy_price=tx.get("price"),
+            first_buy_amount=tx.get("amount_out"),
+            first_buy_usd=amount_decimal,
+            total_buy=amount_decimal,
             is_bot=bool(tx.get("is_bot", False)),
             bot_probability=tx.get("bot_probability"),
             evidence=metadata,
@@ -77,14 +102,20 @@ def identify_early_buyers(
             by_wallet[wallet] = candidate
             continue
         total_buy_usd = existing.total_buy_usd + candidate.total_buy_usd
+        buy_count = existing.buy_count + candidate.buy_count
         if (candidate.first_buy_time, -candidate.total_buy_usd) < (
             existing.first_buy_time,
             -existing.total_buy_usd,
         ):
-            by_wallet[wallet] = replace(candidate, total_buy_usd=total_buy_usd)
+            by_wallet[wallet] = replace(
+                candidate, total_buy_usd=total_buy_usd, total_buy=total_buy_usd, buy_count=buy_count
+            )
         else:
-            by_wallet[wallet] = replace(existing, total_buy_usd=total_buy_usd)
-    return sorted(
+            by_wallet[wallet] = replace(
+                existing, total_buy_usd=total_buy_usd, total_buy=total_buy_usd, buy_count=buy_count
+            )
+    ranked = sorted(
         by_wallet.values(),
         key=lambda buyer: (buyer.first_buy_time, -buyer.total_buy_usd, buyer.wallet_address),
     )[: active.top_n]
+    return [replace(buyer, buy_rank=index) for index, buyer in enumerate(ranked, start=1)]
