@@ -1,2 +1,3 @@
-"""Token intelligence modules are added in Phase 3 and later."""
+from .discovery import WinnerDiscoveryResult, discover_winners
 
+__all__ = ["WinnerDiscoveryResult", "discover_winners"]

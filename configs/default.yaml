@@ -3,3 +3,11 @@ app:
   timezone: UTC
   environment: development
 
+historical_winner:
+  min_multiple: 50
+  preferred_multiple: 100
+  lookback_days: 365
+
+early_buyer:
+  top_n: 20
+  max_entry_hours: 24
