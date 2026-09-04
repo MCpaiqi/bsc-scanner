@@ -1,3 +1,12 @@
+chains:
+  solana:
+    rpc_url: null
+    ws_url: null
+  bsc:
+    rpc_url: null
+    ws_url: null
+    chain_id: 56
+
 solana:
   rpc_url: null
   ws_url: null
@@ -5,4 +14,3 @@ market:
   api_key: null
 dex:
   api_key: null
-

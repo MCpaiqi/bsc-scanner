@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     redis_url: str = Field("redis://localhost:6379/0", alias="REDIS_URL")
     solana_rpc_url: str | None = Field(None, alias="SOLANA_RPC_URL")
     solana_ws_url: str | None = Field(None, alias="SOLANA_WS_URL")
+    bsc_rpc_url: str | None = Field(None, alias="BSC_RPC_URL")
+    bsc_ws_url: str | None = Field(None, alias="BSC_WS_URL")
+    bsc_chain_id: int = Field(56, alias="BSC_CHAIN_ID", ge=1)
     market_api_key: SecretStr | None = Field(None, alias="MARKET_API_KEY")
     dex_api_key: SecretStr | None = Field(None, alias="DEX_API_KEY")
     telegram_bot_token: SecretStr | None = Field(None, alias="TELEGRAM_BOT_TOKEN")
@@ -53,4 +56,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

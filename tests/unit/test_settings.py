@@ -9,6 +9,8 @@ def test_defaults_are_paper_first() -> None:
     assert settings.trading_mode == "PAPER"
     assert settings.is_paper_mode
     assert settings.enable_live_trading is False
+    assert settings.bsc_chain_id == 56
+    assert settings.bsc_rpc_url is None
 
 
 def test_live_mode_requires_two_explicit_guards() -> None:
@@ -27,4 +29,3 @@ def test_live_mode_requires_two_explicit_guards() -> None:
 def test_secrets_are_not_plain_strings_in_settings_repr() -> None:
     settings = Settings(_env_file=None, TRADING_WALLET_PRIVATE_KEY="secret")
     assert "secret" not in repr(settings)
-

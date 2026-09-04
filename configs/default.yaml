@@ -3,6 +3,10 @@ app:
   timezone: UTC
   environment: development
 
+chains:
+  bsc:
+    chain_id: 56
+
 historical_winner:
   min_multiple: 50
   preferred_multiple: 100
