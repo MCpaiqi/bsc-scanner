@@ -60,6 +60,7 @@ def test_early_buyer_ranking_is_unique_deterministic_and_keeps_bot_evidence() ->
         _tx("wallet-b", "sig-b", created + timedelta(minutes=2), usd_value="5"),
         _tx("wallet-a", "sig-a2", created + timedelta(minutes=1), usd_value="10"),
         _tx("wallet-a", "sig-a1", created + timedelta(seconds=30), usd_value="2"),
+        _tx("wallet-a", "sig-a3", created + timedelta(minutes=4), usd_value="3"),
         _tx(
             "wallet-bot",
             "sig-bot",
@@ -77,6 +78,7 @@ def test_early_buyer_ranking_is_unique_deterministic_and_keeps_bot_evidence() ->
     )
     assert [buyer.wallet_address for buyer in result] == ["wallet-a", "wallet-b", "wallet-bot"]
     assert result[0].tx_signature == "sig-a1"
+    assert result[0].total_buy_usd == Decimal(15)
     assert result[-1].is_bot is True
     assert result[-1].bot_probability == Decimal("0.9")
 

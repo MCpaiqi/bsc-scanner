@@ -1,5 +1,5 @@
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -38,6 +38,7 @@ def identify_early_buyers(
     created = token_created_at.astimezone(UTC)
     deadline = created + timedelta(hours=active.max_entry_hours)
     by_wallet: dict[str, EarlyBuyer] = {}
+    seen_signatures: set[tuple[str, str]] = set()
     for tx in transactions:
         wallet = tx.get("wallet_address")
         signature = tx.get("signature")
@@ -48,6 +49,10 @@ def identify_early_buyers(
         timestamp = timestamp.astimezone(UTC)
         if not created <= timestamp <= deadline or tx.get("side") != "BUY":
             continue
+        identity = (wallet, signature)
+        if identity in seen_signatures:
+            continue
+        seen_signatures.add(identity)
         metadata = tx.get("metadata_json") or tx.get("metadata") or {}
         event_type = str(metadata.get("event_type", "")).upper()
         if event_type in {"TRANSFER", "LP", "AIRDROP", "INTERNAL_ROUTING", "UNKNOWN"}:
@@ -68,11 +73,17 @@ def identify_early_buyers(
             evidence=metadata,
         )
         existing = by_wallet.get(wallet)
-        if existing is None or (candidate.first_buy_time, -candidate.total_buy_usd) < (
+        if existing is None:
+            by_wallet[wallet] = candidate
+            continue
+        total_buy_usd = existing.total_buy_usd + candidate.total_buy_usd
+        if (candidate.first_buy_time, -candidate.total_buy_usd) < (
             existing.first_buy_time,
             -existing.total_buy_usd,
         ):
-            by_wallet[wallet] = candidate
+            by_wallet[wallet] = replace(candidate, total_buy_usd=total_buy_usd)
+        else:
+            by_wallet[wallet] = replace(existing, total_buy_usd=total_buy_usd)
     return sorted(
         by_wallet.values(),
         key=lambda buyer: (buyer.first_buy_time, -buyer.total_buy_usd, buyer.wallet_address),
