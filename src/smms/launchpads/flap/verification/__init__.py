@@ -13,6 +13,14 @@ from .events import (
     keccak_topic,
 )
 from .evidence import EvidenceLevel
+from .real_evidence import (
+    RealChainEvidence,
+    verify_contract,
+    verify_event_schema,
+    verify_event_topic,
+    verify_real_log,
+    verify_real_transaction,
+)
 from .report import FlapVerificationReport, build_flap_verification_report
 
 __all__ = [
@@ -25,6 +33,7 @@ __all__ = [
     "EvidenceLevel",
     "FlapCurveFacts",
     "FlapVerificationReport",
+    "RealChainEvidence",
     "VerifiedAddress",
     "VerifiedFlapABI",
     "VerifiedFlapContracts",
@@ -32,4 +41,9 @@ __all__ = [
     "build_flap_verification_report",
     "keccak_topic",
     "verified_curve_facts",
+    "verify_contract",
+    "verify_event_schema",
+    "verify_event_topic",
+    "verify_real_log",
+    "verify_real_transaction",
 ]

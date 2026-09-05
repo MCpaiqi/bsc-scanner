@@ -19,7 +19,8 @@ class FlapDataQualityReport:
     unique_traders: int
     graduation: str
     migration: str
-    missing_blocks: int
+    missing_event_block_reference: int
+    missing_block_coverage: int | None
     missing_timestamps: int
     decode_errors: int
     unknown_events: int | None
@@ -27,6 +28,15 @@ class FlapDataQualityReport:
     evidence_level: EvidenceLevel
     overall: str
     creator_address: str | None = None
+
+    @property
+    def missing_blocks(self) -> int:
+        """Backward-compatible alias for missing event block references.
+
+        This does not mean that the scanned chain range has a coverage gap.
+        """
+
+        return self.missing_event_block_reference
 
     @classmethod
     def build(
@@ -40,6 +50,7 @@ class FlapDataQualityReport:
         decode_errors: int = 0,
         duplicate_events: int = 0,
         unknown_events: int | None = None,
+        missing_block_coverage: int | None = None,
     ) -> "FlapDataQualityReport":
         def side_value(event: TradeEvent) -> str:
             side = getattr(event.side, "value", event.side)
@@ -74,14 +85,17 @@ class FlapDataQualityReport:
         known_timestamps = [timestamp for timestamp in timestamps if isinstance(timestamp, datetime)]
         first_trade = min(known_timestamps) if known_timestamps else None
         last_trade = max(known_timestamps) if known_timestamps else None
-        missing_blocks = sum(block is None for block in blocks)
+        missing_event_block_reference = sum(block is None for block in blocks)
+        if missing_block_coverage is not None and missing_block_coverage < 0:
+            raise ValueError("missing_block_coverage must be non-negative")
         missing_timestamps = sum(timestamp is None for timestamp in timestamps)
         # A historical token is only complete when both sides of the trade
         # lifecycle are present. A BUY-only sample is not a successful
         # backfill, even if every decoded row has a timestamp.
         core_ok = bool(creation_verified and creator_address and buys and sells) and not any(
             (
-                missing_blocks,
+                missing_event_block_reference,
+                missing_block_coverage or 0,
                 missing_timestamps,
                 decode_errors,
                 duplicate_events,
@@ -110,7 +124,8 @@ class FlapDataQualityReport:
             ),
             graduation="VERIFIED" if "GRADUATED" in lifecycle_types else "UNKNOWN",
             migration="VERIFIED" if "DEX_LISTED" in lifecycle_types else "UNKNOWN",
-            missing_blocks=missing_blocks,
+            missing_event_block_reference=missing_event_block_reference,
+            missing_block_coverage=missing_block_coverage,
             missing_timestamps=missing_timestamps,
             decode_errors=decode_errors,
             unknown_events=measured_unknown_events,
@@ -141,7 +156,8 @@ class FlapDataQualityReport:
                 f"唯一交易者：{self.unique_traders}",
                 f"毕业状态：{self.graduation}",
                 f"迁移状态：{self.migration}",
-                f"缺失区块：{self.missing_blocks}",
+                f"缺失事件区块引用：{self.missing_event_block_reference}",
+                f"缺失区块覆盖：{format_count(self.missing_block_coverage)}",
                 f"缺失时间戳：{self.missing_timestamps}",
                 f"解码错误：{self.decode_errors}",
                 f"未知事件：{format_count(self.unknown_events)}",

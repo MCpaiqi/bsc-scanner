@@ -39,6 +39,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--config", type=Path, default=Path("configs/sources.yaml"), help="Flap YAML 配置文件"
     )
 
+    verify = commands.add_parser("verify", help="验证指定链上交易中的 Flap 事件")
+    verify_commands = verify.add_subparsers(dest="launchpad", required=True)
+    verify_flap = verify_commands.add_parser("flap", help="验证 Flap 交易回执和事件日志")
+    verify_flap.add_argument("--tx", required=True, help="交易哈希")
+    verify_flap.add_argument("--event", choices=("TokenCreated", "TokenBought", "TokenSold"))
+    verify_flap.add_argument(
+        "--config", type=Path, default=Path("configs/sources.yaml"), help="Flap YAML 配置文件"
+    )
+
+    quality = commands.add_parser("quality", help="输出 Flap 数据质量报告")
+    quality_commands = quality.add_subparsers(dest="launchpad", required=True)
+    quality_flap = quality_commands.add_parser("flap", help="回填并检查单个 Flap Token")
+    quality_flap.add_argument("--token", required=True, help="目标 Token 合约地址")
+    _add_block_range(quality_flap)
+    quality_flap.add_argument(
+        "--config", type=Path, default=Path("configs/sources.yaml"), help="Flap YAML 配置文件"
+    )
+
     return parser
 
 
@@ -61,6 +79,12 @@ def _load_flap_config(path: Path) -> FlapConfig:
     except ValueError as exc:
         raise DataUnavailable(str(exc)) from exc
     return config
+
+
+def _load_flap_verification_config(path: Path) -> FlapConfig:
+    """Load selectors for read-only verification without enabling ingestion."""
+
+    return FlapConfig.from_yaml(path)
 
 
 async def run_discover_flap(
@@ -108,6 +132,48 @@ async def run_backfill_flap(
     return result.quality.render()
 
 
+async def run_verify_flap(
+    *, provider: BSCProvider, config: FlapConfig, tx_hash: str, event: str | None
+) -> list[dict[str, object]]:
+    from smms.launchpads.flap.verification import verify_real_transaction
+
+    if event:
+        expected_emitter = (
+            config.creation_contract_address
+            if event == "TokenCreated"
+            else config.trade_contract_address
+        )
+        if not expected_emitter:
+            raise DataUnavailable(
+                f"Flap emitter for {event} is not configured; provide verified contract evidence"
+            )
+    else:
+        expected_emitter = None
+        expected_emitters = {
+            name: emitter
+            for name, emitter in (
+                ("TokenCreated", config.creation_contract_address),
+                ("TokenBought", config.trade_contract_address),
+                ("TokenSold", config.trade_contract_address),
+            )
+            if emitter
+        }
+        if len(expected_emitters) < 3:
+            raise DataUnavailable(
+                "Flap creation and trade emitters are required when --event is omitted"
+            )
+    if event:
+        expected_emitters = None
+    evidence = await verify_real_transaction(
+        provider,
+        tx_hash,
+        event=event,
+        expected_emitter=expected_emitter,
+        expected_emitters=expected_emitters,
+    )
+    return [item.as_dict() for item in evidence]
+
+
 def cli(argv: Sequence[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -119,8 +185,13 @@ def cli(argv: Sequence[str] | None = None) -> None:
         return
 
     try:
-        _require_block_range(parser, args)
-        config = _load_flap_config(args.config)
+        if args.command in {"discover", "backfill", "quality"}:
+            _require_block_range(parser, args)
+            config = _load_flap_config(args.config)
+        elif args.command == "verify":
+            config = _load_flap_verification_config(args.config)
+        else:
+            parser.error("unsupported command")
         settings = get_settings()
         provider = BSCProvider(settings)
         if args.command == "discover":
@@ -136,6 +207,31 @@ def cli(argv: Sequence[str] | None = None) -> None:
                 print(json.dumps(record, sort_keys=True))
             return
         if args.command == "backfill":
+            print(
+                asyncio.run(
+                    run_backfill_flap(
+                        provider=provider,
+                        config=config,
+                        token_address=args.token,
+                        from_block=args.from_block,
+                        to_block=args.to_block,
+                    )
+                )
+            )
+            return
+        if args.command == "verify":
+            records = asyncio.run(
+                run_verify_flap(
+                    provider=provider,
+                    config=config,
+                    tx_hash=args.tx,
+                    event=args.event,
+                )
+            )
+            for record in records:
+                print(json.dumps(record, sort_keys=True, default=str))
+            return
+        if args.command == "quality":
             print(
                 asyncio.run(
                     run_backfill_flap(

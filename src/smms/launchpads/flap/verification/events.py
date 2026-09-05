@@ -6,6 +6,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from types import MappingProxyType
 
 from .evidence import EvidenceLevel
@@ -34,6 +35,7 @@ class VerifiedFlapEvent:
     topic0: str
     data_indexes: Mapping[str, int]
     indexed_fields: tuple[str, ...] = ()
+    indexed_topic_indexes: Mapping[str, int] = dataclass_field(default_factory=dict)
     evidence_level: EvidenceLevel = EvidenceLevel.VERIFIED
     source: str = ""
     verified_at: str = "2026-09-04"
@@ -56,7 +58,21 @@ class VerifiedFlapEvent:
             indexes[str(field)] = index
         object.__setattr__(self, "topic0", topic)
         object.__setattr__(self, "data_indexes", MappingProxyType(indexes))
-        object.__setattr__(self, "indexed_fields", tuple(self.indexed_fields))
+        indexed_fields = tuple(str(field) for field in self.indexed_fields)
+        topic_indexes: dict[str, int] = {}
+        for field, index in self.indexed_topic_indexes.items():
+            if isinstance(index, bool) or not isinstance(index, int) or index < 1:
+                raise ValueError(f"indexed topic index for {field} must be at least 1")
+            topic_indexes[str(field)] = index
+        if set(indexed_fields) != set(topic_indexes):
+            raise ValueError(
+                "indexed_fields and indexed_topic_indexes must describe the same fields"
+            )
+        overlap = set(indexed_fields).intersection(indexes)
+        if overlap:
+            raise ValueError(f"indexed fields cannot also be data fields: {sorted(overlap)}")
+        object.__setattr__(self, "indexed_fields", indexed_fields)
+        object.__setattr__(self, "indexed_topic_indexes", MappingProxyType(topic_indexes))
 
     def matches_topic(self, topic: str) -> bool:
         return isinstance(topic, str) and topic.strip().lower() == self.topic0

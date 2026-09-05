@@ -257,6 +257,22 @@ class BSCProvider:
             raise DataUnavailable("BSC eth_call returned an invalid result")
         return result
 
+    async def get_code(self, address: str, *, block_number: int | None = None) -> str:
+        """Return deployed bytecode for an address at a historical block.
+
+        This is intentionally a thin read-only wrapper around ``eth_getCode``;
+        callers must still decide whether the bytecode proves a particular
+        contract role.
+        """
+
+        if not isinstance(address, str) or not address.strip():
+            raise ValueError("address is required")
+        block_tag = "latest" if block_number is None else self._block_tag(block_number)
+        result = await self._request("eth_getCode", [address, block_tag])
+        if not isinstance(result, str) or not result.startswith(("0x", "0X")):
+            raise DataUnavailable("BSC eth_getCode returned an invalid result")
+        return result
+
     async def get_transaction(self, transaction_hash: str) -> ChainTransaction | None:
         result = await self._request("eth_getTransactionByHash", [transaction_hash])
         if result is None:
