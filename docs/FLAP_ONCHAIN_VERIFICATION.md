@@ -63,19 +63,21 @@ topic0 = 0x03a4693e592f5e75dc7c136acb39b146d2b4966c0e509c34f362dee02b3b861a
 
 `LaunchedToDEX`、`FlapTokenProgressChanged`、`FlapTokenCirculatingSupplyChanged`、`TokenCurveSetV2`、`TokenDexSupplyThreshSet`、`TokenQuoteSet` 的 topic 只是候选计算结果，均为 `BLOCKED: VERIFY_ON_CHAIN`。在真实 ABI 和日志确认前，`GRADUATED`、`DEX` 只能是 `INFERRED` 或 `UNKNOWN`。
 
-## 真实创建记录
+## 历史候选记录（不可作为真实证据）
+
+以下地址来自早期脱敏/占位材料，因其呈现规律化尾缀，**不得视为真实链上 Token 或 Creator**。真实证据必须从 BSC RPC 重新发现并写入 `data/evidence/flap/manifest.json`。
 
 | 字段 | 已验证值 |
 | --- | --- |
-| Token | `0x622877b3b964285a8103cc714b5a886177077777` |
-| Creator | `0x52cfb705a72eca722803cea6fd4a0c7199999999` |
-| Name / Symbol | `The BNBFATHER` / `BSCFATHER` |
-| Creation block | `119877660` |
-| Block timestamp | `1788506447`（`2026-09-04 07:20:47 UTC`） |
-| Creation transaction | `0xc3f048ef4df0eb697554cd2cfdfdc0624b353af63eaa7b11d4d8d777e6466342` |
-| Creation log index | `83` |
+| Token | `UNKNOWN`（旧材料中的规律化占位地址已弃用） |
+| Creator | `UNKNOWN`（旧材料中的规律化占位地址已弃用） |
+| Name / Symbol | `UNKNOWN` |
+| Creation block | `UNKNOWN` |
+| Block timestamp | `UNKNOWN` |
+| Creation transaction | `UNKNOWN` |
+| Creation log index | `UNKNOWN` |
 
-该记录证明了真实创建日志字段，但尚未证明 Factory 角色、曲线地址或毕业转移。
+该历史候选记录不再作为证据；Factory 角色、曲线地址和交易闭环仍待真实 RPC 复核。
 
 ## Bonding curve 状态
 

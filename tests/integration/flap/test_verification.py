@@ -49,6 +49,7 @@ def test_curve_facts_do_not_include_global_parameters() -> None:
     assert facts.parameter_names == ("r", "h", "k")
     assert facts.global_parameters is None
     assert facts.state_method == "getTokenV8"
+    assert facts.evidence_level is EvidenceLevel.UNKNOWN
 
 
 def test_verification_report_is_machine_readable_without_unknown_addresses() -> None:

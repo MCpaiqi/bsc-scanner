@@ -15,6 +15,10 @@ from smms.ingestion import DataUnavailable
 logger = logging.getLogger(__name__)
 
 
+class _RetryableRPCError(RuntimeError):
+    """Internal marker for transport/server failures that are safe to retry."""
+
+
 def _hex_int(value: Any, *, field: str) -> int:
     if isinstance(value, bool):
         raise DataUnavailable(f"BSC RPC returned invalid {field}")
@@ -92,14 +96,23 @@ class BSCProvider:
                         endpoint,
                         json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
                     )
-                    response.raise_for_status()
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        if exc.response.status_code == 429 or exc.response.status_code >= 500:
+                            raise _RetryableRPCError(str(exc)) from exc
+                        raise DataUnavailable(f"BSC RPC {method} returned HTTP {exc.response.status_code}") from exc
                     payload = response.json()
                     if not isinstance(payload, dict):
                         raise DataUnavailable(f"BSC RPC {method} returned an invalid payload")
                     if payload.get("error"):
-                        raise DataUnavailable(f"BSC RPC {method} failed: {payload['error']}")
+                        error = payload["error"]
+                        code = error.get("code") if isinstance(error, dict) else None
+                        if code in {-32005, 429}:
+                            raise _RetryableRPCError(f"BSC RPC {method} failed: {error}")
+                        raise DataUnavailable(f"BSC RPC {method} failed: {error}")
                     return payload.get("result")
-                except (DataUnavailable, httpx.HTTPError, ValueError) as exc:
+                except _RetryableRPCError as exc:
                     last_error = exc
                     if attempt >= self.max_retries:
                         break
@@ -111,6 +124,14 @@ class BSCProvider:
                     )
                     if self.retry_backoff:
                         await asyncio.sleep(self.retry_backoff * (2**attempt))
+                except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                    last_error = exc
+                    if attempt >= self.max_retries:
+                        break
+                    if self.retry_backoff:
+                        await asyncio.sleep(self.retry_backoff * (2**attempt))
+                except (DataUnavailable, httpx.HTTPError, ValueError) as exc:
+                    raise DataUnavailable(f"BSC RPC {method} failed permanently") from exc
             raise DataUnavailable(
                 f"BSC RPC {method} unavailable after {self.max_retries + 1} attempts"
             ) from last_error
