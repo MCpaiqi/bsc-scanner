@@ -10,3 +10,4 @@ def test_health_endpoint_reports_paper_mode() -> None:
     assert payload["trading_mode"] == "PAPER"
     assert payload["live_trading_enabled"] is False
     assert payload["bsc_rpc"] == "not_configured"
+    assert payload["market_feed"] == "ready"
