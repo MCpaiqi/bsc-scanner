@@ -17,9 +17,9 @@ class SolanaRPCProvider(DataProvider):
     """
 
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
-        if not settings.solana_rpc_url:
-            raise DataUnavailable("SOLANA_RPC_URL is not configured")
-        self.url = settings.solana_rpc_url
+        # Solana is retained only as historical code; active Settings no longer
+        # exposes Solana endpoints in the BSC-only production runtime.
+        raise DataUnavailable("Solana runtime is not supported; configure BSC RPC instead")
         self.client = client
         self._owned_client = client is None
 
@@ -99,4 +99,3 @@ class SolanaRPCProvider(DataProvider):
             }
             for item in transactions
         ]
-

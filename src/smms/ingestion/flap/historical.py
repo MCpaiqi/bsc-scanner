@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any
 
 from smms.chains.base import ChainLog, ChainProvider, ChainTransaction, TransactionReceipt
+from smms.chains.constants import BSC_CHAIN_ID
 from smms.db.models import (
     Token,
     TokenLifecycleEvent,
@@ -230,17 +231,17 @@ class FlapHistoricalIngestionService:
             raise DataUnavailable(
                 f"Flap ingestion requires the BSC provider, received {provider_chain}"
             )
-        configured_chain_id = getattr(self.provider, "chain_id", 56)
-        if configured_chain_id != 56:
+        configured_chain_id = getattr(self.provider, "chain_id", BSC_CHAIN_ID)
+        if configured_chain_id != BSC_CHAIN_ID:
             raise DataUnavailable(
-                f"Flap ingestion requires BNB mainnet chain id 56, received {configured_chain_id}"
+                f"Flap ingestion requires BNB mainnet chain id {BSC_CHAIN_ID}, received {configured_chain_id}"
             )
         get_chain_id = getattr(self.provider, "get_chain_id", None)
         if callable(get_chain_id):
             remote_chain_id = await get_chain_id()
-            if remote_chain_id != 56:
+            if remote_chain_id != BSC_CHAIN_ID:
                 raise DataUnavailable(
-                    f"Flap RPC chain id mismatch: expected 56, received {remote_chain_id}"
+                    f"Flap RPC chain id mismatch: expected {BSC_CHAIN_ID}, received {remote_chain_id}"
                 )
         self._chain_validated = True
 

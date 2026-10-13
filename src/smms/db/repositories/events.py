@@ -22,18 +22,19 @@ class TradeEventRepository:
         self.session = session
 
     def get_by_identity(
-        self, chain: str, tx_hash: str, event_index: int
+        self, chain: str, tx_hash: str, event_index: int, block_hash: str | None = None
     ) -> TradeEvent | None:
         return self.session.scalar(
             select(TradeEvent).where(
                 TradeEvent.chain == chain,
                 TradeEvent.tx_hash == tx_hash,
                 TradeEvent.event_index == event_index,
+                *([TradeEvent.block_hash == block_hash] if block_hash is not None else []),
             )
         )
 
     def add_idempotent(self, event: TradeEvent) -> TradeEvent:
-        existing = self.get_by_identity(event.chain, event.tx_hash, event.event_index)
+        existing = self.get_by_identity(event.chain, event.tx_hash, event.event_index, event.block_hash)
         if existing is None:
             try:
                 with self.session.begin_nested():
@@ -41,7 +42,7 @@ class TradeEventRepository:
                     self.session.flush()
                 existing = event
             except IntegrityError:
-                existing = self.get_by_identity(event.chain, event.tx_hash, event.event_index)
+                existing = self.get_by_identity(event.chain, event.tx_hash, event.event_index, event.block_hash)
                 if existing is None:
                     raise
         if existing is not event:

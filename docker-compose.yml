@@ -1,17 +1,104 @@
+x-runtime-env: &runtime-env
+  DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/smms
+  REDIS_URL: redis://redis:6379/0
+  ENABLE_LIVE_TRADING: "false"
+
 services:
-  app:
-    build: .
+  api:
+    build:
+      context: .
+      target: runtime
     env_file:
       - path: .env
         required: false
+    environment: *runtime-env
     depends_on:
+      db-migrate:
+        condition: service_completed_successfully
       postgres:
-        condition: service_healthy
-      redis:
         condition: service_healthy
     ports:
       - "8000:8000"
     command: ["uvicorn", "smms.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  bsc-ingestion:
+    build:
+      context: .
+      target: runtime
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *runtime-env
+      SMMS_INSTANCE_ID: bsc-backfill
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    command: ["python", "-m", "smms.runtime", "bsc-ingestion"]
+    restart: unless-stopped
+
+  bsc-live-tail:
+    build:
+      context: .
+      target: runtime
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      <<: *runtime-env
+      SMMS_INSTANCE_ID: bsc-live-tail
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    command: ["python", "-m", "smms.runtime", "bsc-live-tail"]
+    restart: unless-stopped
+
+  radar-worker:
+    build:
+      context: .
+      target: runtime
+    env_file:
+      - path: .env
+        required: false
+    environment: *runtime-env
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["python", "-m", "smms.runtime", "radar-worker"]
+    restart: unless-stopped
+
+  forward-worker:
+    build:
+      context: .
+      target: runtime
+    env_file:
+      - path: .env
+        required: false
+    environment: *runtime-env
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    command: ["python", "-m", "smms.runtime", "forward-worker"]
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      target: web
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
 
   postgres:
     image: postgres:16-alpine
@@ -28,6 +115,20 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  db-migrate:
+    build:
+      context: .
+      target: runtime
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/smms
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
 
   redis:
     image: redis:7-alpine

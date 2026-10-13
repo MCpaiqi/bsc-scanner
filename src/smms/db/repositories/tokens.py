@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from smms.chains.constants import DEFAULT_CHAIN, normalize_address
 from smms.db.models import Token
 
 
@@ -11,12 +12,14 @@ class TokenRepository:
     def __init__(self, session: Session):
         self.session = session
 
-    def get_by_address(self, address: str, chain: str = "solana") -> Token | None:
+    def get_by_address(self, address: str, chain: str = DEFAULT_CHAIN) -> Token | None:
+        address = normalize_address(address, chain=chain)
         return self.session.scalar(
             select(Token).where(Token.address == address, Token.chain == chain)
         )
 
-    def upsert(self, address: str, chain: str = "solana", **values: Any) -> Token:
+    def upsert(self, address: str, chain: str = DEFAULT_CHAIN, **values: Any) -> Token:
+        address = normalize_address(address, chain=chain)
         token = self.get_by_address(address, chain)
         if token is None:
             token = Token(address=address, chain=chain)

@@ -21,7 +21,7 @@ def test_verified_flap_contracts_keep_portal_and_unknown_roles_separate() -> Non
     assert contracts.bonding_curve is None
 
 
-def test_verified_event_topics_and_real_field_positions_are_registered() -> None:
+def test_known_event_topics_and_field_positions_do_not_claim_fixture_verification() -> None:
     created = VERIFIED_FLAP_EVENTS["TokenCreated"]
     bought = VERIFIED_FLAP_EVENTS["TokenBought"]
     sold = VERIFIED_FLAP_EVENTS["TokenSold"]
@@ -35,7 +35,7 @@ def test_verified_event_topics_and_real_field_positions_are_registered() -> None
     assert bought.data_indexes["native_amount"] == 4
     assert bought.data_indexes["price"] == 6
     assert sold.topic0 == "0x03a4693e592f5e75dc7c136acb39b146d2b4966c0e509c34f362dee02b3b861a"
-    assert sold.evidence_level is EvidenceLevel.VERIFIED
+    assert sold.evidence_level is not EvidenceLevel.VERIFIED
     assert keccak_topic(created.signature) == created.topic0
     assert keccak_topic(bought.signature) == bought.topic0
     assert keccak_topic(sold.signature) == sold.topic0
@@ -58,5 +58,5 @@ def test_verification_report_is_machine_readable_without_unknown_addresses() -> 
     assert report["chain_id"] == 56
     assert report["contracts"]["portal"]
     assert report["contracts"]["factory"] is None
-    assert "TokenCreated" in report["verified_events"]
+    assert report["verified_events"] == []
     assert report["curve"]["status"].startswith("PARTIAL")

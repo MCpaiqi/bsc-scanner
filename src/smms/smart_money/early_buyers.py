@@ -1,17 +1,37 @@
+"""Replayable early buyer discovery and Decimal position accounting."""
 from collections.abc import Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 _NON_TRADE_EVENTS = {"TRANSFER", "LP", "AIRDROP", "INTERNAL_ROUTING", "UNKNOWN"}
 
-
 @dataclass(frozen=True)
 class EarlyBuyerConfig:
     top_n: int = 20
     max_entry_hours: int = 24
+    window_type: str = "buyers"
+    window_value: int | None = None
+    @property
+    def effective_window_value(self) -> int:
+        return self.window_value if self.window_value is not None else (self.top_n if self.window_type in {"buyers", "blocks"} else 5)
 
+@dataclass(frozen=True)
+class PositionSnapshot:
+    cumulative_bought: Decimal
+    cumulative_sold: Decimal
+    current_balance: Decimal
+    total_invested: Decimal | None
+    total_returned: Decimal | None
+    realized_pnl: Decimal | None
+    unrealized_pnl: Decimal | None
+    roi: Decimal | None
+    current_price: Decimal | None
+    current_market_cap: Decimal | None
+    last_trade_timestamp: datetime | None
+    last_trade_block: int | None
+    reorg_corrected: bool = False
 
 @dataclass(frozen=True)
 class EarlyBuyer:
@@ -20,6 +40,7 @@ class EarlyBuyer:
     total_buy_usd: Decimal = Decimal(0)
     entry_market_cap: Decimal | None = None
     tx_signature: str = ""
+    first_buy_block: int | None = None
     token_address: str | None = None
     token_age_at_buy: int | None = None
     token_age_at_buy_seconds: int | None = None
@@ -43,310 +64,130 @@ class EarlyBuyer:
     buy_rank: int | None = None
     is_bot: bool = False
     bot_probability: Decimal | None = None
+    entry_delay_seconds: int | None = None
+    entry_time_bucket: str | None = None
+    current_balance: Decimal | None = None
+    total_invested: Decimal | None = None
+    total_returned: Decimal | None = None
+    roi: Decimal | None = None
+    current_price: Decimal | None = None
+    market_cap_status: str = "UNKNOWN"
+    position: PositionSnapshot | None = None
     evidence: dict[str, Any] | None = None
 
-
 def _utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
-
-
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 def _decimal(value: Any) -> Decimal | None:
-    if value is None:
-        return None
-    try:
-        return Decimal(str(value))
-    except (InvalidOperation, TypeError, ValueError):
-        return None
-
-
+    try: return None if value is None else Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError): return None
 def _metadata(tx: dict[str, Any]) -> dict[str, Any]:
     value = tx.get("metadata_json") or tx.get("metadata") or {}
     return value if isinstance(value, dict) else {}
-
-
-def _usd_value(tx: dict[str, Any], side: str) -> Decimal | None:
-    keys = ("usd_value", "amount_out_usd") if side == "BUY" else ("usd_value", "amount_in_usd")
-    for key in keys:
+def _value(tx: dict[str, Any], side: str) -> Decimal | None:
+    for key in (("usd_value", "amount_out_usd") if side == "BUY" else ("usd_value", "amount_in_usd")):
         value = _decimal(tx.get(key))
-        if value is not None:
-            return value
+        if value is not None: return value
     return None
-
-
-def _token_amount(tx: dict[str, Any], side: str) -> Decimal | None:
-    keys = (
-        ("amount_out", "amount_out_token", "token_amount", "amount")
-        if side == "BUY"
-        else ("amount_in", "amount_in_token", "token_amount", "amount")
-    )
-    for key in keys:
+def _amount(tx: dict[str, Any], side: str) -> Decimal | None:
+    for key in (("amount_out", "amount_out_token", "token_amount", "amount") if side == "BUY" else ("amount_in", "amount_in_token", "token_amount", "amount")):
         value = _decimal(tx.get(key))
-        if value is not None:
-            return value
+        if value is not None: return value
     return None
-
-
 def _price(tx: dict[str, Any]) -> Decimal | None:
     for key in ("price", "execution_price", "token_price"):
         value = _decimal(tx.get(key))
-        if value is not None:
-            return value
+        if value is not None: return value
     return None
-
-
-def _target_event(token_address: str, tx: dict[str, Any], side: str) -> bool:
-    if tx.get("token_address") == token_address:
-        return True
-    if side == "BUY":
-        return tx.get("token_out") == token_address
-    return tx.get("token_in") == token_address or (
-        tx.get("token_in") is None and tx.get("token_out") == token_address
-    )
-
-
-def _known_bool(tx: dict[str, Any], metadata: dict[str, Any], *keys: str) -> bool | None:
-    for key in keys:
-        for source in (tx, metadata):
-            value = source.get(key)
-            if isinstance(value, bool):
-                return value
-    return None
-
-
-def _ath_timestamp(tx: dict[str, Any], metadata: dict[str, Any]) -> datetime | None:
-    for source in (tx, metadata):
-        value = source.get("ath_at") or source.get("token_ath_at")
-        if isinstance(value, datetime):
-            return _utc(value)
-        if value is not None:
-            try:
-                return datetime.fromtimestamp(float(value), tz=UTC)
-            except (TypeError, ValueError, OverflowError):
-                try:
-                    return _utc(datetime.fromisoformat(str(value)))
-                except ValueError:
-                    continue
-    return None
-
-
-def _activity_metrics(events: list[dict[str, Any]], first_buy: dict[str, Any]) -> dict[str, Any]:
-    """Aggregate only facts present in the observed event stream."""
-
-    events = [event for event in events if event["timestamp"] >= first_buy["timestamp"]]
-    buys = [event for event in events if event["side"] == "BUY"]
-    sells = [event for event in events if event["side"] == "SELL"]
-    buy_usd = [event["usd"] for event in buys if event["usd"] is not None]
-    sell_usd = [event["usd"] for event in sells if event["usd"] is not None]
-    total_buy = sum(buy_usd, Decimal(0)) if buy_usd else None
-    total_sell = sum(sell_usd, Decimal(0)) if sell_usd else None
-
-    remaining_qty = Decimal(0)
-    remaining_cost = Decimal(0)
-    realized = Decimal(0)
-    realized_known = False
-    max_unrealized: Decimal | None = None
-    latest_unrealized: Decimal | None = None
-    ath_pnl: Decimal | None = None
-    explicit_ath_pnl: Decimal | None = None
-    for event in events:
-        quantity = event["amount"]
-        usd = event["usd"]
-        if event["side"] == "BUY":
-            if quantity is not None:
-                remaining_qty += quantity
-            if usd is not None:
-                remaining_cost += usd
-        else:
-            explicit = _decimal(event["tx"].get("realized_pnl") or event["tx"].get("pnl"))
-            if explicit is not None:
-                realized += explicit
-                realized_known = True
-            elif quantity is not None and usd is not None and remaining_qty > 0:
-                matched = min(quantity, remaining_qty)
-                cost = remaining_cost * matched / remaining_qty
-                realized += usd * matched / quantity - cost
-                realized_known = True
-            if quantity is not None and remaining_qty > 0:
-                matched = min(quantity, remaining_qty)
-                before_qty = remaining_qty
-                remaining_qty -= matched
-                remaining_cost -= remaining_cost * matched / before_qty
-
-        mark = event["price"]
-        if mark is not None and remaining_qty >= 0:
-            latest_unrealized = remaining_qty * mark - remaining_cost
-            max_unrealized = (
-                latest_unrealized
-                if max_unrealized is None
-                else max(max_unrealized, latest_unrealized)
-            )
-        explicit = _decimal(
-            event["tx"].get("pnl_at_ATH") or event["tx"].get("pnl_at_ath")
-        )
-        if explicit is not None:
-            explicit_ath_pnl = explicit
-        is_ath = bool(event["tx"].get("is_ath") or event["metadata"].get("is_ath"))
-        ath_at = _ath_timestamp(event["tx"], event["metadata"])
-        if is_ath or (ath_at is not None and event["timestamp"] == ath_at):
-            ath_pnl = latest_unrealized
-
-    graduated: bool | None = None
-    for event in events:
-        graduated = _known_bool(
-            event["tx"],
-            event["metadata"],
-            "survived_to_graduation",
-            "graduated",
-        )
-        if graduated is not None:
-            break
-        lifecycle = str(
-            event["tx"].get("lifecycle_event") or event["metadata"].get("lifecycle_event") or ""
-        ).upper()
-        if lifecycle in {"GRADUATED", "GRADUATION"}:
-            graduated = True
-            break
-
-    sold_before_ath: bool | None = None
-    for event in events:
-        explicit = _known_bool(event["tx"], event["metadata"], "sold_before_ath")
-        if explicit is not None:
-            sold_before_ath = explicit
-            break
-        if event["side"] == "SELL":
-            ath_at = _ath_timestamp(event["tx"], event["metadata"])
-            if ath_at is not None:
-                sold_before_ath = event["timestamp"] < ath_at
-                break
-
-    end_time = max(event["timestamp"] for event in events) if events else first_buy["timestamp"]
-    holding_duration = max(0, int((end_time - first_buy["timestamp"]).total_seconds()))
-    return {
-        "buy_count": len(buys),
-        "sell_count": len(sells),
-        "total_buy": total_buy,
-        "total_sell": total_sell,
-        "realized_pnl": realized if realized_known else None,
-        "unrealized_pnl": latest_unrealized,
-        "max_unrealized_pnl": max_unrealized,
-        "pnl_at_ATH": explicit_ath_pnl if explicit_ath_pnl is not None else ath_pnl,
-        "holding_duration": holding_duration,
-        "sold_before_ath": sold_before_ath,
-        "survived_to_graduation": graduated,
-        "evidence": {**(first_buy["metadata"] or {}), "observed_event_count": len(events)},
-    }
-
-
-def identify_early_buyers(
-    token_address: str,
-    transactions: Iterable[dict[str, Any]],
-    *,
-    token_created_at: datetime,
-    config: EarlyBuyerConfig | None = None,
-) -> list[EarlyBuyer]:
-    """Identify early buyers and summarize their observed token activity.
-
-    Eligibility and ranking use only BUY events in the configured post-creation
-    window. Later events are used only to summarize behavior already observed by
-    the caller; absent future facts remain ``None``.
-    """
-
-    active = config or EarlyBuyerConfig()
-    if active.top_n <= 0 or active.max_entry_hours <= 0:
-        return []
-    created = _utc(token_created_at)
-    deadline = created + timedelta(hours=active.max_entry_hours)
-    by_wallet: dict[str, list[dict[str, Any]]] = {}
-    seen_signatures: set[tuple[str, str, int, str]] = set()
+def _target(token: str, tx: dict[str, Any], side: str) -> bool:
+    if tx.get("token_address") == token: return True
+    return tx.get("token_out") == token if side == "BUY" else tx.get("token_in") == token or (tx.get("token_in") is None and tx.get("token_out") == token)
+def _bucket(seconds: int) -> str:
+    if seconds < 10: return "0-10 sec"
+    if seconds < 30: return "10-30 sec"
+    if seconds < 60: return "30-60 sec"
+    if seconds < 300: return "1-5 min"
+    if seconds < 900: return "5-15 min"
+    return "15+ min"
+def _events_for(token: str, transactions: Iterable[dict[str, Any]], created: datetime) -> list[dict[str, Any]]:
+    events, seen = [], set()
     for tx in transactions:
-        wallet = tx.get("wallet_address") or tx.get("trader_address")
-        signature = tx.get("signature") or tx.get("tx_hash")
-        timestamp = tx.get("timestamp")
-        if not wallet or not signature or not isinstance(timestamp, datetime):
-            continue
-        timestamp = _utc(timestamp)
-        if timestamp < created:
-            continue
+        wallet, signature, timestamp = tx.get("wallet_address") or tx.get("trader_address"), tx.get("signature") or tx.get("tx_hash"), tx.get("timestamp")
+        if not wallet or not signature or not isinstance(timestamp, datetime): continue
         side = str(tx.get("side", "")).upper()
-        if side not in {"BUY", "SELL"} or not _target_event(token_address, tx, side):
-            continue
+        if side not in {"BUY", "SELL"} or not _target(token, tx, side): continue
+        timestamp = _utc(timestamp)
+        if timestamp < created: continue
         metadata = _metadata(tx)
-        event_type = str(metadata.get("event_type", tx.get("event_type", "SWAP"))).upper()
-        if event_type in _NON_TRADE_EVENTS:
-            continue
-        try:
-            event_index = int(tx.get("event_index", 0) or 0)
-        except (TypeError, ValueError):
-            event_index = 0
-        identity = (str(wallet), str(signature), event_index, side)
-        if identity in seen_signatures:
-            continue
-        seen_signatures.add(identity)
-        by_wallet.setdefault(str(wallet), []).append(
-            {
-                "tx": tx,
-                "metadata": metadata,
-                "timestamp": timestamp,
-                "side": side,
-                "usd": _usd_value(tx, side),
-                "amount": _token_amount(tx, side),
-                "price": _price(tx),
-            }
-        )
+        if str(metadata.get("event_type", tx.get("event_type", "SWAP"))).upper() in _NON_TRADE_EVENTS or metadata.get("removed") or tx.get("removed"): continue
+        try: index = int(tx.get("event_index", 0) or 0)
+        except (TypeError, ValueError): index = 0
+        identity = (str(signature).lower(), index)
+        if identity in seen: continue
+        seen.add(identity)
+        events.append({"tx": tx, "wallet": str(wallet), "timestamp": timestamp, "side": side, "usd": _value(tx, side), "amount": _amount(tx, side), "price": _price(tx), "metadata": metadata})
+    return sorted(events, key=lambda e: (e["timestamp"], e["tx"].get("block_number") or 0, str(e["tx"].get("signature") or e["tx"].get("tx_hash"))))
 
-    candidates: list[EarlyBuyer] = []
-    for wallet, events in by_wallet.items():
-        events.sort(key=lambda event: (event["timestamp"], str(event["tx"].get("signature", ""))))
-        early_buys = [
-            event
-            for event in events
-            if event["side"] == "BUY" and event["timestamp"] <= deadline
-        ]
-        if not early_buys:
+def calculate_position(events: Iterable[dict[str, Any]]) -> PositionSnapshot:
+    lots, bought, sold, invested, returned, realized = [], Decimal(0), Decimal(0), Decimal(0), Decimal(0), Decimal(0)
+    realized_known, current_price, current_mc, last_ts, last_block, reorg = True, None, None, None, None, False
+    for event in sorted(events, key=lambda e: (e["timestamp"], str(e["tx"].get("signature", "")))):
+        tx, side, qty, usd = event["tx"], event["side"], event["amount"], event["usd"]
+        last_ts, last_block, reorg = event["timestamp"], tx.get("block_number"), reorg or bool(tx.get("reorg_corrected") or event["metadata"].get("reorg_corrected"))
+        if event["price"] is not None: current_price = event["price"]
+        if _decimal(tx.get("market_cap")) is not None: current_mc = _decimal(tx.get("market_cap"))
+        if side == "BUY":
+            if qty is not None: lots.append([qty, usd or Decimal(0)]); bought += qty
+            if usd is not None: invested += usd
             continue
-        first_buy = early_buys[0]
-        early_buy_usd = sum(
-            (event["usd"] or Decimal(0) for event in early_buys), Decimal(0)
-        )
-        metrics = _activity_metrics(events, first_buy)
-        first_tx = first_buy["tx"]
-        age = int((first_buy["timestamp"] - created).total_seconds())
-        candidates.append(
-            EarlyBuyer(
-                wallet_address=wallet,
-                first_buy_time=first_buy["timestamp"],
-                total_buy_usd=early_buy_usd,
-                entry_market_cap=first_tx.get("market_cap"),
-                tx_signature=str(first_tx.get("signature") or first_tx.get("tx_hash")),
-                token_address=token_address,
-                token_age_at_buy=age,
-                token_age_at_buy_seconds=age,
-                first_buy_market_cap=first_tx.get("market_cap"),
-                first_buy_price=first_buy["price"],
-                first_buy_amount=first_buy["amount"],
-                first_buy_usd=first_buy["usd"],
-                buy_count=metrics["buy_count"],
-                sell_count=metrics["sell_count"],
-                total_buy=metrics["total_buy"],
-                total_sell=metrics["total_sell"],
-                realized_pnl=metrics["realized_pnl"],
-                unrealized_pnl=metrics["unrealized_pnl"],
-                max_unrealized_pnl=metrics["max_unrealized_pnl"],
-                pnl_at_ATH=metrics["pnl_at_ATH"],
-                pnl_at_ath=metrics["pnl_at_ATH"],
-                holding_duration=metrics["holding_duration"],
-                holding_duration_seconds=metrics["holding_duration"],
-                sold_before_ath=metrics["sold_before_ath"],
-                survived_to_graduation=metrics["survived_to_graduation"],
-                is_bot=bool(first_tx.get("is_bot", False)),
-                bot_probability=first_tx.get("bot_probability"),
-                evidence=metrics["evidence"],
-            )
-        )
-    ranked = sorted(
-        candidates,
-        key=lambda buyer: (buyer.first_buy_time, -buyer.total_buy_usd, buyer.wallet_address),
-    )[: active.top_n]
-    return [replace(buyer, buy_rank=index) for index, buyer in enumerate(ranked, start=1)]
+        if qty is not None: sold += qty
+        if usd is not None: returned += usd
+        if qty is None or usd is None: realized_known = False; continue
+        remaining, cost = qty, Decimal(0)
+        while remaining > 0 and lots:
+            lot_qty, lot_cost = lots[0]; matched = min(remaining, lot_qty)
+            cost += lot_cost * matched / lot_qty if lot_qty else Decimal(0); remaining -= matched
+            lots[0] = [lot_qty - matched, lot_cost * (lot_qty - matched) / lot_qty] if matched < lot_qty else [Decimal(0), Decimal(0)]
+            if lots[0][0] == 0: lots.pop(0)
+        if remaining > 0: realized_known = False
+        realized += usd - cost
+    balance, cost_remaining = sum((x[0] for x in lots), Decimal(0)), sum((x[1] for x in lots), Decimal(0))
+    unrealized = balance * current_price - cost_remaining if current_price is not None else None
+    total_value = returned + balance * current_price if current_price is not None else (returned if balance == 0 and returned else None)
+    roi = (total_value - invested) / invested if total_value is not None and invested else None
+    return PositionSnapshot(bought, sold, balance, invested or None, returned or None, realized if realized_known else None, unrealized, roi, current_price, current_mc, last_ts, last_block, reorg)
+
+def identify_early_buyers(token_address: str, transactions: Iterable[dict[str, Any]], *, token_created_at: datetime, config: EarlyBuyerConfig | None = None, token_created_block: int | None = None) -> list[EarlyBuyer]:
+    active, created = config or EarlyBuyerConfig(), _utc(token_created_at)
+    if active.top_n <= 0 or active.max_entry_hours <= 0: return []
+    events, deadline = _events_for(token_address, transactions, created), created + timedelta(hours=active.max_entry_hours)
+    by_wallet: dict[str, list[dict[str, Any]]] = {}
+    for event in events: by_wallet.setdefault(event["wallet"], []).append(event)
+    firsts = []
+    for wallet, wallet_events in by_wallet.items():
+        buys = [e for e in wallet_events if e["side"] == "BUY" and e["timestamp"] <= deadline]
+        if not buys: continue
+        first, age = buys[0], int((buys[0]["timestamp"] - created).total_seconds())
+        if active.window_type == "minutes" and age > active.effective_window_value * 60: continue
+        if active.window_type == "blocks" and token_created_block is not None and (first["tx"].get("block_number") or 0) > token_created_block + active.effective_window_value: continue
+        firsts.append((wallet, first, wallet_events))
+    firsts.sort(key=lambda x: (x[1]["timestamp"], x[1]["tx"].get("block_number") or 0, x[0]))
+    if active.window_type == "buyers": firsts = firsts[:active.effective_window_value]
+    result = []
+    for rank, (wallet, first, wallet_events) in enumerate(firsts, 1):
+        pos, age, mc = calculate_position(wallet_events), int((first["timestamp"] - created).total_seconds()), _decimal(first["tx"].get("market_cap"))
+        sold_before_ath = None
+        survived_to_graduation = None
+        for event in wallet_events:
+            tx, metadata = event["tx"], event["metadata"]
+            if event["side"] == "SELL" and (metadata.get("ath_at") or tx.get("ath_at")):
+                try:
+                    ath = _utc(datetime.fromisoformat(str(metadata.get("ath_at") or tx.get("ath_at"))))
+                    sold_before_ath = event["timestamp"] < ath
+                except ValueError:
+                    pass
+            if tx.get("graduated") is True or metadata.get("graduated") is True:
+                survived_to_graduation = True
+        result.append(EarlyBuyer(wallet_address=wallet, first_buy_time=first["timestamp"], first_buy_block=first["tx"].get("block_number"), total_buy_usd=sum((e["usd"] or Decimal(0) for e in wallet_events if e["side"] == "BUY" and e["timestamp"] <= deadline), Decimal(0)), entry_market_cap=mc, tx_signature=str(first["tx"].get("signature") or first["tx"].get("tx_hash")), token_address=token_address, token_age_at_buy=age, token_age_at_buy_seconds=age, first_buy_market_cap=mc, first_buy_price=first["price"], first_buy_amount=first["amount"], first_buy_usd=first["usd"], buy_count=sum(1 for e in wallet_events if e["side"] == "BUY"), sell_count=sum(1 for e in wallet_events if e["side"] == "SELL"), total_buy=pos.total_invested, total_sell=pos.total_returned, realized_pnl=pos.realized_pnl, unrealized_pnl=pos.unrealized_pnl, buy_rank=rank, entry_delay_seconds=age, entry_time_bucket=_bucket(age), current_balance=pos.current_balance, total_invested=pos.total_invested, total_returned=pos.total_returned, roi=pos.roi, current_price=pos.current_price, market_cap_status="KNOWN" if mc is not None else "UNKNOWN", position=pos, sold_before_ath=sold_before_ath, survived_to_graduation=survived_to_graduation, holding_duration=int((pos.last_trade_timestamp - first["timestamp"]).total_seconds()) if pos.last_trade_timestamp else 0, holding_duration_seconds=int((pos.last_trade_timestamp - first["timestamp"]).total_seconds()) if pos.last_trade_timestamp else 0, is_bot=bool(first["tx"].get("is_bot", False)), bot_probability=_decimal(first["tx"].get("bot_probability")), evidence={"observed_event_count": len(wallet_events)}))
+    return result
+
+__all__ = ["EarlyBuyer", "EarlyBuyerConfig", "PositionSnapshot", "calculate_position", "identify_early_buyers"]

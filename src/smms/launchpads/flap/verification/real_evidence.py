@@ -12,10 +12,11 @@ from datetime import datetime
 from typing import Any
 
 from smms.chains.base import ChainLog, ChainProvider
+from smms.chains.constants import BSC_CHAIN_ID
 from smms.ingestion import DataUnavailable
 
 from .._decoding import address_from_topic, data_words
-from .events import VERIFIED_FLAP_EVENTS, VerifiedFlapEvent
+from .events import KNOWN_FLAP_EVENTS, ON_CHAIN_VERIFIED_FLAP_EVENTS, VerifiedFlapEvent
 from .evidence import EvidenceLevel
 
 
@@ -35,6 +36,9 @@ class RealChainEvidence:
     data: str
     event_name: str
     decoded_fields: Mapping[str, Any]
+    raw_log: Mapping[str, Any] | None = None
+    raw_receipt: Mapping[str, Any] | None = None
+    raw_transaction: Mapping[str, Any] | None = None
     evidence_level: EvidenceLevel = EvidenceLevel.VERIFIED
 
     def as_dict(self) -> dict[str, Any]:
@@ -53,6 +57,11 @@ class RealChainEvidence:
             "data": self.data,
             "event_name": self.event_name,
             "decoded_fields": dict(self.decoded_fields),
+            "raw_log": dict(self.raw_log) if self.raw_log is not None else None,
+            "raw_receipt": dict(self.raw_receipt) if self.raw_receipt is not None else None,
+            "raw_transaction": (
+                dict(self.raw_transaction) if self.raw_transaction is not None else None
+            ),
             "evidence_level": self.evidence_level.value,
         }
 
@@ -61,7 +70,7 @@ def _event(event: str | VerifiedFlapEvent) -> VerifiedFlapEvent:
     if isinstance(event, VerifiedFlapEvent):
         return event
     try:
-        return VERIFIED_FLAP_EVENTS[event]
+        return KNOWN_FLAP_EVENTS[event]
     except KeyError as exc:
         raise DataUnavailable(f"unknown Flap event: {event}") from exc
 
@@ -74,7 +83,7 @@ async def verify_contract(
     provider: ChainProvider,
     address: str,
     *,
-    expected_chain_id: int = 56,
+    expected_chain_id: int = BSC_CHAIN_ID,
     block_number: int | None = None,
 ) -> dict[str, Any]:
     """Verify chain id and that ``address`` has deployed bytecode.
@@ -188,6 +197,9 @@ async def verify_real_log(
     event: str | VerifiedFlapEvent,
     expected_emitter: str | None = None,
     token_address: str | None = None,
+    raw_receipt: Mapping[str, Any] | None = None,
+    raw_transaction: Mapping[str, Any] | None = None,
+    transaction_verified: bool = False,
 ) -> RealChainEvidence:
     """Verify one provider-normalized log and recover its block timestamp."""
 
@@ -213,14 +225,20 @@ async def verify_real_log(
     # The event register is documentation-derived until a real receipt has
     # been independently captured and marked ``VERIFIED_ON_CHAIN``. A block
     # timestamp alone never upgrades an unproven ABI/topic to VERIFIED.
+    verified_fixture = ON_CHAIN_VERIFIED_FLAP_EVENTS.get(registered.name)
     evidence_level = (
         EvidenceLevel.VERIFIED
-        if timestamp is not None and registered.fixture_status == "VERIFIED_ON_CHAIN"
+        if (
+            timestamp is not None
+            and transaction_verified
+            and verified_fixture is not None
+            and verified_fixture.fixture_status == "VERIFIED_ON_CHAIN"
+        )
         else EvidenceLevel.UNKNOWN
     )
     return RealChainEvidence(
         chain=str(getattr(provider, "chain", "bsc")),
-        chain_id=int(getattr(provider, "chain_id", 56)),
+        chain_id=int(getattr(provider, "chain_id", BSC_CHAIN_ID)),
         contract_address=log.address,
         tx_hash=log.transaction_hash,
         block_number=log.block_number,
@@ -231,6 +249,16 @@ async def verify_real_log(
         data=log.data,
         event_name=registered.name,
         decoded_fields=decoded,
+        raw_log=log.raw or {
+            "address": log.address,
+            "topics": list(log.topics),
+            "data": log.data,
+            "blockNumber": hex(log.block_number),
+            "transactionHash": log.transaction_hash,
+            "logIndex": hex(log.log_index),
+        },
+        raw_receipt=raw_receipt,
+        raw_transaction=raw_transaction,
         evidence_level=evidence_level,
     )
 
@@ -258,12 +286,14 @@ async def verify_real_transaction(
         raise DataUnavailable("receipt transaction hash does not match requested hash")
     if transaction.block_number is not None and transaction.block_number != receipt.block_number:
         raise DataUnavailable("transaction block does not match receipt block")
+    if receipt.status is not None and receipt.status != 1:
+        raise DataUnavailable("failed transaction cannot be used as Flap evidence")
     for log in receipt.logs:
         if log.transaction_hash.lower() != tx_hash.lower():
             raise DataUnavailable("receipt contains a log for a different transaction")
         if log.block_number != receipt.block_number:
             raise DataUnavailable("receipt contains a log for a different block")
-    events = [_event(event)] if event is not None else list(VERIFIED_FLAP_EVENTS.values())
+    events = [_event(event)] if event is not None else list(KNOWN_FLAP_EVENTS.values())
     results: list[RealChainEvidence] = []
     for log in receipt.logs:
         matched = next(
@@ -289,6 +319,22 @@ async def verify_real_transaction(
             event=matched,
             expected_emitter=emitter,
             token_address=token_address,
+            raw_receipt=receipt.raw or {
+                "transactionHash": receipt.transaction_hash,
+                "blockNumber": hex(receipt.block_number),
+                "status": hex(receipt.status) if receipt.status is not None else None,
+            },
+            raw_transaction=transaction.raw or {
+                "hash": transaction.transaction_hash,
+                "blockNumber": (
+                    hex(transaction.block_number)
+                    if transaction.block_number is not None
+                    else None
+                ),
+                "from": transaction.from_address,
+                "to": transaction.to_address,
+            },
+            transaction_verified=True,
         ))
     if not results:
         raise DataUnavailable("transaction contains no registered Flap event logs")

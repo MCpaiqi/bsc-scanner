@@ -1,4 +1,4 @@
-"""已验证及候选 Flap 事件声明。
+"""Known, on-chain verified, and candidate Flap event declarations.
 
 事件目录刻意保持为纯数据。它只记录已经验证的事实；未知的合约角色和
 生命周期语义不会写入可启用的适配器配置。
@@ -36,7 +36,7 @@ class VerifiedFlapEvent:
     data_indexes: Mapping[str, int]
     indexed_fields: tuple[str, ...] = ()
     indexed_topic_indexes: Mapping[str, int] = dataclass_field(default_factory=dict)
-    evidence_level: EvidenceLevel = EvidenceLevel.VERIFIED
+    evidence_level: EvidenceLevel = EvidenceLevel.INFERRED
     source: str = ""
     verified_at: str = "2026-09-04"
     fixture_status: str = "PENDING"
@@ -122,13 +122,21 @@ TOKEN_SOLD = VerifiedFlapEvent(
 )
 
 
-VERIFIED_FLAP_EVENTS: Mapping[str, VerifiedFlapEvent] = MappingProxyType(
+KNOWN_FLAP_EVENTS: Mapping[str, VerifiedFlapEvent] = MappingProxyType(
     {
         TOKEN_CREATED.name: TOKEN_CREATED,
         TOKEN_BOUGHT.name: TOKEN_BOUGHT,
         TOKEN_SOLD.name: TOKEN_SOLD,
     }
 )
+
+# This register is deliberately empty until a replayable manifest captures a
+# successful receipt, transaction, emitter, topic, and schema for an event.
+ON_CHAIN_VERIFIED_FLAP_EVENTS: Mapping[str, VerifiedFlapEvent] = MappingProxyType({})
+
+# Backwards-compatible name for known schemas. Evidence levels remain unchanged;
+# only ON_CHAIN_VERIFIED_FLAP_EVENTS may contain independently verified fixtures.
+VERIFIED_FLAP_EVENTS: Mapping[str, VerifiedFlapEvent] = KNOWN_FLAP_EVENTS
 
 
 def _candidate(name: str, signature: str, topic0: str) -> VerifiedFlapEvent:
@@ -181,6 +189,8 @@ CANDIDATE_FLAP_EVENTS: Mapping[str, VerifiedFlapEvent] = MappingProxyType(
 
 __all__ = [
     "CANDIDATE_FLAP_EVENTS",
+    "KNOWN_FLAP_EVENTS",
+    "ON_CHAIN_VERIFIED_FLAP_EVENTS",
     "TOKEN_BOUGHT",
     "TOKEN_CREATED",
     "TOKEN_SOLD",

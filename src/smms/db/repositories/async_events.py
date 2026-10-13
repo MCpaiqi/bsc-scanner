@@ -12,18 +12,19 @@ class AsyncTradeEventRepository:
         self.session = session
 
     async def get_by_identity(
-        self, chain: str, tx_hash: str, event_index: int
+        self, chain: str, tx_hash: str, event_index: int, block_hash: str | None = None
     ) -> TradeEvent | None:
         return await self.session.scalar(
             select(TradeEvent).where(
                 TradeEvent.chain == chain,
                 TradeEvent.tx_hash == tx_hash,
                 TradeEvent.event_index == event_index,
+                *([TradeEvent.block_hash == block_hash] if block_hash is not None else []),
             )
         )
 
     async def add_idempotent(self, event: TradeEvent) -> TradeEvent:
-        existing = await self.get_by_identity(event.chain, event.tx_hash, event.event_index)
+        existing = await self.get_by_identity(event.chain, event.tx_hash, event.event_index, event.block_hash)
         if existing is None:
             try:
                 async with self.session.begin_nested():
@@ -31,12 +32,14 @@ class AsyncTradeEventRepository:
                     await self.session.flush()
                 existing = event
             except IntegrityError:
-                existing = await self.get_by_identity(event.chain, event.tx_hash, event.event_index)
+                existing = await self.get_by_identity(event.chain, event.tx_hash, event.event_index, event.block_hash)
                 if existing is None:
                     raise
         if existing is not event:
             self._merge(existing, event)
             await self.session.flush()
+        from smms.radar.hooks import project
+        await project(self.session, existing)
         return existing
 
     @staticmethod
@@ -103,6 +106,8 @@ class AsyncTokenLifecycleEventRepository:
                 if value is not None:
                     setattr(existing, name, value)
             await self.session.flush()
+        from smms.radar.hooks import project
+        await project(self.session, existing)
         return existing
 
 

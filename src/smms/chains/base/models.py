@@ -17,6 +17,15 @@ class ChainLog:
     transaction_index: int | None = None
     timestamp: datetime | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    block_hash: str | None = None
+    removed: bool = False
+    confirmation_status: str = "pending"
+
+    @property
+    def identity(self) -> tuple[str, int]:
+        """Stable EVM log identity used for deduplication and replay."""
+
+        return (self.transaction_hash.lower(), self.log_index)
 
 
 @dataclass(frozen=True)
@@ -50,4 +59,3 @@ class Block:
     timestamp: datetime
     transactions: tuple[ChainTransaction, ...] = ()
     raw: dict[str, Any] = field(default_factory=dict)
-

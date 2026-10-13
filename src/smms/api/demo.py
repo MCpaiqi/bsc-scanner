@@ -43,12 +43,28 @@ def demo_bsc_tokens(limit: int = 18) -> dict[str, Any]:
                 "description": "仅用于界面预览的演示代币",
                 "socials": [],
                 "dex_url": None,
+                "smart_money_score": [78, 61, 84, None, 72, 55][index],
+                "smart_wallet_count": [7, 3, 11, 0, 6, 2][index],
+                "smart_money_buy_usd": [18400, 3200, 52100, 0, 9700, 1200][index],
+                "early_smart_buy_count": [4, 1, 7, 0, 3, 1][index],
+                "smart_money_top_wallets": [f"0x{index + 200:040x}"],
+                "contract_risk": ["LOW", "HIGH", "CRITICAL", "UNKNOWN", "MEDIUM", "HIGH"][index],
+                "liquidity_risk": ["MEDIUM", "HIGH", "LOW", "CRITICAL", "LOW", "HIGH"][index],
+                "holder_risk": ["LOW", "MEDIUM", "HIGH", "UNKNOWN", "MEDIUM", "HIGH"][index],
+                "behavior_risk": ["LOW", "MEDIUM", "HIGH", "UNKNOWN", "LOW", "HIGH"][index],
+                "bot_probability": [0.08, 0.22, 0.72, None, 0.11, 0.66][index],
+                "wash_probability": [0.04, 0.18, 0.61, None, 0.08, 0.58][index],
+                "overall_risk": ["MEDIUM", "HIGH", "CRITICAL", "UNKNOWN", "LOW", "HIGH"][index],
+                "risk_evidence": [["liquidity_observed"], ["mintable", "low_current_liquidity"], ["top_holder_concentration", "high_frequency"], [], ["holder_distribution_observed"], ["circular_trading", "high_sell_tax"]][index],
             }
         )
     return {
         "chain": "bsc",
         "source": "demo",
         "demo": True,
+        "observed_at": now.isoformat(),
         "updated_at": now.isoformat(),
+        "freshness": "FRESH",
+        "data_status": "DEMO",
         "tokens": tokens[:limit],
     }

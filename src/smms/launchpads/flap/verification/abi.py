@@ -6,9 +6,7 @@ from types import MappingProxyType
 
 from .events import (
     CANDIDATE_FLAP_EVENTS,
-    TOKEN_BOUGHT,
-    TOKEN_CREATED,
-    TOKEN_SOLD,
+    KNOWN_FLAP_EVENTS,
     VerifiedFlapEvent,
 )
 
@@ -19,6 +17,7 @@ class VerifiedFlapABI:
 
     events: Mapping[str, VerifiedFlapEvent]
     full_abi_status: str = "PARTIAL: EVENT DECLARATIONS ONLY"
+    on_chain_verified: bool = False
 
     @classmethod
     def current(cls) -> "VerifiedFlapABI":
@@ -26,9 +25,7 @@ class VerifiedFlapABI:
             events=MappingProxyType(
                 {
                     **dict(CANDIDATE_FLAP_EVENTS),
-                    TOKEN_CREATED.name: TOKEN_CREATED,
-                    TOKEN_BOUGHT.name: TOKEN_BOUGHT,
-                    TOKEN_SOLD.name: TOKEN_SOLD,
+                    **dict(KNOWN_FLAP_EVENTS),
                 }
             )
         )

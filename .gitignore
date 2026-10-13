@@ -4,8 +4,18 @@ venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest-tmp*/
+.phase751-*-tmp/
 .mypy_cache/
 .ruff_cache/
+.phase*/
+.phase*.zip
+.release-test-temp/
+.release-test-*/
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo
+web/**/*.tsbuildinfo
 dist/
 build/
 *.egg-info/
@@ -17,4 +27,3 @@ data/reports/*
 !data/normalized/.gitkeep
 !data/exports/.gitkeep
 !data/reports/.gitkeep
-

@@ -1,0 +1,13 @@
+.git
+.env
+node_modules
+web/node_modules
+__pycache__
+.pytest_cache
+.ruff_cache
+.phase*-tmp
+.pytest-*
+*.db
+*.sqlite
+dist
+build

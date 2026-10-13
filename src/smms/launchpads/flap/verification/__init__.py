@@ -5,6 +5,8 @@ from .addresses import VerifiedAddress, VerifiedFlapContracts
 from .curve import FlapCurveFacts, verified_curve_facts
 from .events import (
     CANDIDATE_FLAP_EVENTS,
+    KNOWN_FLAP_EVENTS,
+    ON_CHAIN_VERIFIED_FLAP_EVENTS,
     TOKEN_BOUGHT,
     TOKEN_CREATED,
     TOKEN_SOLD,
@@ -25,6 +27,8 @@ from .report import FlapVerificationReport, build_flap_verification_report
 
 __all__ = [
     "CANDIDATE_FLAP_EVENTS",
+    "KNOWN_FLAP_EVENTS",
+    "ON_CHAIN_VERIFIED_FLAP_EVENTS",
     "TOKEN_BOUGHT",
     "TOKEN_CREATED",
     "TOKEN_SOLD",

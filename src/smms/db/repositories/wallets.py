@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from smms.chains.constants import DEFAULT_CHAIN, normalize_address
 from smms.db.models import Wallet
 
 
@@ -11,12 +12,14 @@ class WalletRepository:
     def __init__(self, session: Session):
         self.session = session
 
-    def get_by_address(self, address: str, chain: str = "solana") -> Wallet | None:
+    def get_by_address(self, address: str, chain: str = DEFAULT_CHAIN) -> Wallet | None:
+        address = normalize_address(address, chain=chain)
         return self.session.scalar(
             select(Wallet).where(Wallet.address == address, Wallet.chain == chain)
         )
 
-    def upsert(self, address: str, chain: str = "solana", **values: Any) -> Wallet:
+    def upsert(self, address: str, chain: str = DEFAULT_CHAIN, **values: Any) -> Wallet:
+        address = normalize_address(address, chain=chain)
         wallet = self.get_by_address(address, chain)
         if wallet is None:
             wallet = Wallet(address=address, chain=chain)

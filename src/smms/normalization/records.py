@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from smms.chains.constants import DEFAULT_CHAIN
 from smms.ingestion.types import RawSwap, RawToken, RawTransaction, utc_from_unix
 
 
@@ -37,7 +38,7 @@ def normalize_token(raw: RawToken) -> dict[str, Any]:
         raise NormalizationError("Token address is required")
     return {
         "address": address,
-        "chain": raw.get("chain", "solana"),
+        "chain": raw.get("chain", DEFAULT_CHAIN),
         "symbol": raw.get("symbol"),
         "name": raw.get("name"),
         "metadata_json": {**raw.get("metadata", {}), "decimals": raw.get("decimals")},
@@ -95,4 +96,3 @@ def normalize_swap(raw: RawSwap) -> dict[str, Any]:
         "dex": raw.get("dex"),
         "metadata_json": raw.get("metadata", {}),
     }
-

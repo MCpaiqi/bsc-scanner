@@ -36,5 +36,28 @@ class ChainSubscription(Protocol):
     """Optional live stream seam; implementations may use WebSocket or another transport."""
 
     def subscribe_logs(
-        self, *, address: str | None = None, topics: Sequence[str] | None = None
+        self, *, address: str | Sequence[str] | None = None, topics: Sequence[str] | None = None
     ) -> AsyncIterator[ChainLog]: ...
+
+
+@runtime_checkable
+class LogStream(Protocol):
+    """Provider-independent stream of normalized EVM logs."""
+
+    def subscribe_logs(
+        self, *, address: str | Sequence[str] | None = None, topics: Sequence[str] | None = None
+    ) -> AsyncIterator[ChainLog]: ...
+
+
+@runtime_checkable
+class BlockStream(Protocol):
+    """Provider-independent stream of new block headers."""
+
+    def subscribe_blocks(self) -> AsyncIterator[Block]: ...
+
+
+@runtime_checkable
+class ChainStream(LogStream, BlockStream, Protocol):
+    """Combined chain stream seam used by realtime ingestion."""
+
+    async def close(self) -> None: ...

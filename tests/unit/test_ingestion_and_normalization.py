@@ -67,7 +67,7 @@ def test_swap_normalization_accepts_utc_datetime() -> None:
 
 
 @pytest.mark.asyncio
-async def test_solana_rpc_provider_uses_standard_json_rpc_methods() -> None:
+async def test_solana_rpc_provider_is_disabled_in_bsc_only_runtime() -> None:
     calls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -99,10 +99,7 @@ async def test_solana_rpc_provider_uses_standard_json_rpc_methods() -> None:
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": {"slot": 4, "blockTime": 1735689600}})
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    provider = SolanaRPCProvider(Settings(_env_file=None, SOLANA_RPC_URL="https://rpc.example"), client)
-    token = await provider.get_token("Token111")
-    transactions = await provider.get_transactions("Wallet111", limit=1)
+    with pytest.raises(DataUnavailable, match="Solana runtime is not supported"):
+        SolanaRPCProvider(Settings(_env_file=None), client)
     await client.aclose()
-    assert token["decimals"] == 6
-    assert transactions[0]["signature"] == "sig-1"
-    assert calls == ["getAccountInfo", "getSignaturesForAddress", "getTransaction"]
+    assert calls == []

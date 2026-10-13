@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from smms.chains.constants import DEFAULT_CHAIN, normalize_address
 from smms.db.models import Token, Wallet, WalletTransaction
 
 
@@ -12,12 +13,14 @@ class AsyncTokenRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get_by_address(self, address: str, chain: str = "solana") -> Token | None:
+    async def get_by_address(self, address: str, chain: str = DEFAULT_CHAIN) -> Token | None:
+        address = normalize_address(address, chain=chain)
         return await self.session.scalar(
             select(Token).where(Token.address == address, Token.chain == chain)
         )
 
-    async def upsert(self, address: str, chain: str = "solana", **values: Any) -> Token:
+    async def upsert(self, address: str, chain: str = DEFAULT_CHAIN, **values: Any) -> Token:
+        address = normalize_address(address, chain=chain)
         token = await self.get_by_address(address, chain)
         if token is None:
             token = Token(address=address, chain=chain)
@@ -40,12 +43,14 @@ class AsyncWalletRepository:
     def __init__(self, session: AsyncSession):
         self.session = session
 
-    async def get_by_address(self, address: str, chain: str = "solana") -> Wallet | None:
+    async def get_by_address(self, address: str, chain: str = DEFAULT_CHAIN) -> Wallet | None:
+        address = normalize_address(address, chain=chain)
         return await self.session.scalar(
             select(Wallet).where(Wallet.address == address, Wallet.chain == chain)
         )
 
-    async def upsert(self, address: str, chain: str = "solana", **values: Any) -> Wallet:
+    async def upsert(self, address: str, chain: str = DEFAULT_CHAIN, **values: Any) -> Wallet:
+        address = normalize_address(address, chain=chain)
         wallet = await self.get_by_address(address, chain)
         if wallet is None:
             wallet = Wallet(address=address, chain=chain)

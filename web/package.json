@@ -1,0 +1,25 @@
+{
+  "name": "smms-trader-workstation",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "vite": "latest",
+    "typescript": "latest",
+    "react": "latest",
+    "react-dom": "latest"
+  },
+  "devDependencies": {
+    "vitest": "latest",
+    "jsdom": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest"
+  }
+}

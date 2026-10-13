@@ -54,7 +54,24 @@ def test_phase4_alembic_revisions_upgrade_and_downgrade(tmp_path, monkeypatch) -
     command.upgrade(config, "head")
     engine = create_engine(f"sqlite:///{database_path}")
     tables = set(inspect(engine).get_table_names())
-    assert {"trade_events", "wallet_performance", "smart_money_scores"} <= tables
+    assert {
+        "trade_events",
+        "wallet_performance",
+        "smart_money_scores",
+        "wallet_smart_money_snapshots",
+        "token_smart_money_snapshots",
+    } <= tables
+    wallet_snapshot_indexes = {
+        index["name"]
+        for index in inspect(engine).get_indexes("wallet_smart_money_snapshots")
+    }
+    token_snapshot_indexes = {
+        index["name"]
+        for index in inspect(engine).get_indexes("token_smart_money_snapshots")
+    }
+    assert "ix_wallet_smart_money_snapshot_lookup" in wallet_snapshot_indexes
+    assert "ix_wallet_smart_money_snapshot_rank" in wallet_snapshot_indexes
+    assert "ix_token_smart_money_snapshot_lookup" in token_snapshot_indexes
     token_columns = {column["name"] for column in inspect(engine).get_columns("tokens")}
     assert {"launchpad", "volume", "holders"} <= token_columns
     assert any(
@@ -212,7 +229,7 @@ def test_smart_money_score_is_weighted_explainable_and_penalizes_risk() -> None:
     assert result.penalties > 0
     assert "win_rate" in result.components
     assert result.components["win_rate"] == Decimal("0.8")
-    assert result.components["median_roi"] == Decimal(1)
+    assert result.components["median_roi"] == Decimal("0.8")
     assert result.components["risk_adjusted_return"] == Decimal("0.9")
     assert result.explanation
 

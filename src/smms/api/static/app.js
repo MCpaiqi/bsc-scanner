@@ -20,6 +20,8 @@ const elements = {
   count: document.querySelector("#resultCount"),
   logs: document.querySelector("#logEntries"),
   logCount: document.querySelector("#logCount"),
+  signalGrid: document.querySelector("#signalGrid"),
+  signalStatus: document.querySelector("#signalStatus"),
 };
 
 const number = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 });
@@ -118,6 +120,15 @@ function card(token) {
   })).find((item) => item.url);
   const buys = token.txns_m5?.buys || 0;
   const sells = token.txns_m5?.sells || 0;
+  const smartScore = token.smart_money_score == null ? "UNKNOWN" : number.format(token.smart_money_score);
+  const smartCount = token.smart_wallet_count == null ? "UNKNOWN" : number.format(token.smart_wallet_count);
+  const smartBuy = token.smart_money_buy_usd == null ? "UNKNOWN" : money(Number(token.smart_money_buy_usd));
+  const earlySmart = token.early_smart_buy_count == null ? "UNKNOWN" : number.format(token.early_smart_buy_count);
+  const risk = (token.overall_risk || "UNKNOWN").toUpperCase();
+  const riskValue = (key) => String(token[key] || "UNKNOWN").toUpperCase();
+  const probability = (value) => value == null ? "UNKNOWN" : `${(Number(value) * 100).toFixed(0)}%`;
+  const evidence = Array.isArray(token.risk_evidence) && token.risk_evidence.length ? token.risk_evidence.join(" · ") : "暂无可验证证据";
+  const walletLink = token.smart_money_top_wallets?.[0] ? "/api/wallet/" + encodeURIComponent(token.smart_money_top_wallets[0]) + "/profile?chain=bsc" : "";
   const logo = image
     ? `<img class="token-logo" src="${escapeHtml(image)}" alt="" loading="lazy" referrerpolicy="no-referrer" />`
     : `<span class="token-logo token-logo-fallback">${escapeHtml((token.symbol || "?").slice(0, 1))}</span>`;
@@ -134,7 +145,10 @@ function card(token) {
         <div><span class="metric-label">24 小时成交量</span><span class="metric-value">${money(token.volume_h24)}</span><span class="metric-sub">1h ${money(token.volume_h1)}</span></div>
         <div><span class="metric-label">24 小时涨跌</span>${change(token.price_change_h24)}<span class="metric-sub">5m ${token.price_change_m5 == null ? "—" : `${number.format(token.price_change_m5)}%`}</span></div>
       </div>
-      <div class="safety-row"><span>审计待接入</span><span>聪明钱待接入</span></div>
+      <div class="safety-row risk-row"><span>Contract ${escapeHtml(riskValue("contract_risk"))}</span><span>Liquidity ${escapeHtml(riskValue("liquidity_risk"))}</span><span>Holder ${escapeHtml(riskValue("holder_risk"))}</span><span>Overall <strong>${escapeHtml(risk)}</strong></span></div>
+      <div class="smart-money-row"><span>Bot Risk ${escapeHtml(probability(token.bot_probability))}</span><span>Wash Risk ${escapeHtml(probability(token.wash_probability))}</span><span>Smart Money ${escapeHtml(smartScore)} · 钱包 ${escapeHtml(smartCount)}</span></div>
+      <details class="risk-evidence"><summary>查看风险证据</summary><p>${escapeHtml(evidence)}</p></details>
+      <div class="smart-money-row"><span>Smart Money Buy ${escapeHtml(smartBuy)}</span><span>Early Smart Buyers ${escapeHtml(earlySmart)}</span>${walletLink ? `<a class="card-link" href="${escapeHtml(walletLink)}" target="_blank" rel="noopener noreferrer">查看钱包</a>` : ""}</div>
       <div class="card-foot"><span class="data-source">实时价格 ${money(token.price_usd)}</span><div class="card-actions">${social ? `<a class="card-link" href="${escapeHtml(social.url)}" target="_blank" rel="noopener noreferrer">${social.type === "twitter" ? "X" : "官网"}</a>` : ""}${dexUrl ? `<a class="card-link" href="${escapeHtml(dexUrl)}" target="_blank" rel="noopener noreferrer">行情</a>` : ""}${bscscanUrl ? `<a class="card-link" href="${bscscanUrl}" target="_blank" rel="noopener noreferrer">合约</a>` : ""}</div></div>
     </article>`;
 }
@@ -191,6 +205,18 @@ async function refresh() {
     elements.grid.setAttribute("aria-busy", "false");
     elements.refresh.classList.remove("loading");
     elements.refresh.disabled = false;
+  }
+  try {
+    const response = await fetch("/api/backtest/signals?limit=50", { headers: { Accept: "application/json" } });
+    const payload = await response.json();
+    elements.signalStatus.textContent = payload.status || "INSUFFICIENT_DATA";
+    elements.signalGrid.innerHTML = (payload.signals || []).map((signal) => `
+      <article class="token-card">
+        <div class="card-head"><div class="token-title"><strong>${escapeHtml(signal.token)}</strong><span>${escapeHtml(signal.timestamp)}</span></div><span class="age-badge">${escapeHtml(signal.signal)}</span></div>
+        <div class="metrics"><div><span class="metric-label">Score</span><span class="metric-value">${escapeHtml(signal.score)}</span></div><div><span class="metric-label">Risk</span><span class="metric-value">${escapeHtml(signal.risk_level)}</span></div><div><span class="metric-label">Smart Money</span><span class="metric-value">${escapeHtml(signal.smart_money_score ?? "UNKNOWN")}</span></div><div><span class="metric-label">Entry</span><span class="metric-value">${escapeHtml(signal.entry_price ?? "UNKNOWN")}</span></div></div>
+      </article>`).join("");
+  } catch {
+    elements.signalStatus.textContent = "INSUFFICIENT_DATA";
   }
 }
 

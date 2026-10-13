@@ -96,6 +96,18 @@
         </div>
       </section>
 
+      <section class="workspace panel" id="signalHistory">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">RESEARCH BACKTEST</span>
+            <h1>Signal History</h1>
+            <p>只读研究信号与未来窗口表现；无历史数据时显示 INSUFFICIENT_DATA。</p>
+          </div>
+        </div>
+        <div class="result-meta"><span id="signalStatus">加载中</span></div>
+        <div class="token-grid" id="signalGrid"></div>
+      </section>
+
       <section class="log-panel panel">
         <button class="log-heading" id="logToggle" type="button" aria-expanded="true">
           <span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>扫描设置与记录</span>
@@ -104,7 +116,7 @@
         <div class="log-body" id="logBody">
           <div class="capability-row">
             <span><i class="ok"></i>市场行情：DexScreener</span>
-            <span><i class="pending"></i>聪明钱评分：待接入</span>
+            <span><i class="ok"></i>聪明钱评分：Smart Money Score</span>
             <span><i class="pending"></i>合约审计：待接入</span>
             <span><i class="safe"></i>交易执行：已禁用</span>
           </div>

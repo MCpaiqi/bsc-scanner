@@ -1,7 +1,4 @@
 chains:
-  solana:
-    rpc_url: null
-    ws_url: null
   bsc:
     rpc_url: null
     ws_url: null
@@ -30,9 +27,6 @@ launchpads:
     native_decimals: 18
     price_decimals: null # VERIFY_ON_CHAIN
 
-solana:
-  rpc_url: null
-  ws_url: null
 market:
   api_key: null
 dex:

@@ -5,7 +5,7 @@ from typing import Any
 
 from .addresses import VerifiedFlapContracts
 from .curve import verified_curve_facts
-from .events import CANDIDATE_FLAP_EVENTS, VERIFIED_FLAP_EVENTS
+from .events import CANDIDATE_FLAP_EVENTS, ON_CHAIN_VERIFIED_FLAP_EVENTS
 
 
 @dataclass(frozen=True)
@@ -40,7 +40,7 @@ class FlapVerificationReport:
 def build_flap_verification_report() -> FlapVerificationReport:
     return FlapVerificationReport(
         contracts=VerifiedFlapContracts.bsc_mainnet(),
-        verified_events=tuple(VERIFIED_FLAP_EVENTS),
+        verified_events=tuple(ON_CHAIN_VERIFIED_FLAP_EVENTS),
         candidate_events=tuple(CANDIDATE_FLAP_EVENTS),
         curve_status="PARTIAL: PER-TOKEN STATE REQUIRED",
     )

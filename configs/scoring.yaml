@@ -10,6 +10,7 @@ wallet:
 
 smart_money:
   # 权重只应用于时间点一致的指标；数值使用小数表示。
+  # 时间衰减由 exponential_time_decay(age_days, half_life_days) 应用，默认半衰期 180 天。
   win_rate: 0.18
   roi: 0.14
   median_roi: 0.10
@@ -22,3 +23,8 @@ smart_money:
   rug_penalty: 0.10
   bot_penalty: 0.10
   wash_penalty: 0.10
+
+smart_money_normalization:
+  # ROI=scale maps to 0.5; larger returns approach 1 without reaching it.
+  roi_scale: 0.25
+  median_roi_scale: 0.25
