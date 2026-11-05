@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from smms.chains.constants import BSC_CHAIN_ID, validate_bsc_chain
+from smms.db.facts import canonical_fact_conditions
 from smms.db.models import (
     EarlyBuyer,
     MarketEvent,
@@ -140,7 +141,7 @@ class HistoricalDatasetBuilder:
         session: Session,
         *,
         chain: str = "bsc",
-        model_version: str = "dataset-v2",
+        model_version: str = "dataset-v3",
         score_version: str = "v2",
         risk_version: str = "risk-v1",
         chain_id: int = BSC_CHAIN_ID,
@@ -179,12 +180,24 @@ class HistoricalDatasetBuilder:
         """
         states = []
         discovery = token.creation_timestamp or token.first_seen_at
-        if token.launchpad and discovery:
+        creation_evidence = self.session.scalar(
+            select(TokenLifecycleEvent.id).where(
+                TokenLifecycleEvent.chain == self.chain,
+                TokenLifecycleEvent.token_address == token.address.lower(),
+                TokenLifecycleEvent.event_type == "CREATED",
+                TokenLifecycleEvent.timestamp <= discovery,
+            ).limit(1)
+        ) if discovery else None
+        # Token fields are a legacy fallback, not independent proof that can
+        # resurrect an orphaned CREATED fact. Future facts must not erase a
+        # previously observable legacy discovery.
+        if token.launchpad and discovery and creation_evidence is None:
             states.append((_utc(discovery), "LAUNCHPAD_DISCOVERED"))
         events = self.session.scalars(
             select(TokenLifecycleEvent).where(
                 TokenLifecycleEvent.chain == self.chain,
                 TokenLifecycleEvent.token_address == token.address.lower(),
+                *canonical_fact_conditions(TokenLifecycleEvent),
             )
         ).all()
         for event in events:
@@ -192,7 +205,9 @@ class HistoricalDatasetBuilder:
                 states.append((_utc(event.timestamp), "LAUNCHPAD_DISCOVERED"))
             elif event.event_type in {"MIGRATED", "MIGRATED_TO_DEX"}:
                 states.append((_utc(event.timestamp), "MIGRATED_TO_DEX"))
-        pairs = self.session.scalars(select(Pair).where(Pair.chain_id == self.chain_id)).all()
+        pairs = self.session.scalars(select(Pair).where(
+            Pair.chain_id == self.chain_id, *canonical_fact_conditions(Pair),
+        )).all()
         for pair in pairs:
             if (
                 token.address.lower() in {pair.token0_address.lower(), pair.token1_address.lower()}
@@ -204,6 +219,7 @@ class HistoricalDatasetBuilder:
                 TradeEvent.chain == self.chain,
                 TradeEvent.token_address == token.address.lower(),
                 TradeEvent.launchpad.is_not(None),
+                *canonical_fact_conditions(TradeEvent),
             )
         ).all()
         states.extend((_utc(t.timestamp), "LAUNCHPAD_ACTIVE") for t in trades)
@@ -243,6 +259,7 @@ class HistoricalDatasetBuilder:
                     TradeEvent.chain == self.chain,
                     TradeEvent.token_address == address,
                     TradeEvent.timestamp <= evaluation_end,
+                    *canonical_fact_conditions(TradeEvent),
                 )
                 .order_by(TradeEvent.timestamp)
             ).all()
@@ -254,6 +271,7 @@ class HistoricalDatasetBuilder:
                     MarketEvent.chain_id == self.chain_id,
                     MarketEvent.token_address == address,
                     MarketEvent.timestamp <= evaluation_end,
+                    *canonical_fact_conditions(MarketEvent),
                 )
                 .order_by(MarketEvent.timestamp)
             ).all()
@@ -359,6 +377,8 @@ class HistoricalDatasetBuilder:
             )
             risk_data = (
                 {
+                    "overall_risk": risk.overall_risk,
+                    # Retain the original export alias for existing readers.
                     "level": risk.overall_risk,
                     "confidence": risk.confidence,
                     "bot_probability": risk.bot_probability,
@@ -366,7 +386,10 @@ class HistoricalDatasetBuilder:
                     "as_of": risk.as_of,
                 }
                 if risk
-                else {"level": "UNKNOWN", "confidence": None, "as_of": None}
+                else {
+                    "overall_risk": "UNKNOWN", "level": "UNKNOWN",
+                    "confidence": None, "as_of": None,
+                }
             )
             quality = {
                 "price": bool(market.get("price")),

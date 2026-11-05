@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from smms.chains.constants import normalize_address, validate_bsc_chain
+from smms.db.facts import canonical_fact_conditions
 from smms.db.models import Token, TokenRiskSnapshot, TradeEvent
 from smms.db.repositories import TokenRiskSnapshotRepository
 
@@ -51,7 +52,14 @@ class RiskAggregationService:
         repo = TokenRiskSnapshotRepository(self.session)
         count = 0
         for token in tokens:
-            trades = list(self.session.scalars(select(TradeEvent).where(TradeEvent.chain == self.chain, TradeEvent.token_address == token.address, TradeEvent.timestamp <= cutoff).order_by(TradeEvent.timestamp, TradeEvent.id)).all())
+            trades = list(self.session.scalars(
+                select(TradeEvent).where(
+                    TradeEvent.chain == self.chain,
+                    TradeEvent.token_address == token.address,
+                    TradeEvent.timestamp <= cutoff,
+                    *canonical_fact_conditions(TradeEvent),
+                ).order_by(TradeEvent.timestamp, TradeEvent.id)
+            ).all())
             analysis = analyze_token_risk(
                 token,
                 trades=trades,

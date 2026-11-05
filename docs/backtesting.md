@@ -1,3 +1,25 @@
 # 回测
 
-时间线回放、交易成本建模和样本外验证推迟到 Phase 7。未来发生的观察值不得参与历史时点的信号生成。
+历史数据集由数据库中的 BSC 事实构建。特征价格只包含信号时点及以前的
+记录；未来价格单独进入评价路径。未来观察值不得参与信号生成。
+
+自 `dataset-v3` 起，重建会排除 Pair/TradeEvent 的非 canonical、removed 记录，
+以及市场和生命周期记录上的 removed、orphaned、orphaned confirmation 标记。
+已撤销的 CREATED 证据不能通过 Token 上缓存的 launchpad/first_seen_at 字段
+重新进入研究 universe；没有创建事件的旧数据仍保留原有发现时间回退。
+
+风险使用 `risk.overall_risk`。导出继续保留 `risk.level`，回测兼容此前保存的
+level-only 数据集；缺证据仍返回 UNKNOWN，CRITICAL 保持 HIGH_RISK。
+
+旧的物化数据集不会自动改写。修正过滤规则后，应使用新的 dataset-version
+构建相同研究区间，再比较 config_hash、覆盖报告和结果；旧派生快照也需要
+按其来源重新计算。示例：
+
+```powershell
+smms dataset build --chain bsc --from 2026-09-14T11:22:48+00:00 --to 2026-09-14T12:37:49+00:00 --dataset-version bsc-canonical-v3-20260914
+smms backtest --dataset bsc-canonical-v3-20260914 --strategy composite
+```
+
+实时 Alpha 的覆盖证明、完成状态，以及 Forward 的取价容差和回撤公式仍在
+可靠性改进范围内，见 [验收清单](RESEARCH_RELIABILITY.md)。本次数据集修复
+不代表这些评价链路已经完成验收。

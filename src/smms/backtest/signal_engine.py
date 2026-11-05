@@ -185,7 +185,12 @@ def generate_signal(token: str, timestamp: datetime, *, market: Mapping[str, Any
     future = _future_snapshot(market, ts) or _future_snapshot(smart_money, ts) or _future_snapshot(risk, ts)
     if future: flags.append("future_snapshot")
     early = [item for item in early_buyers if (_get(item, "first_buy_time", _get(item, "timestamp"))) is not None and _dt(_get(item, "first_buy_time", _get(item, "timestamp"))) <= ts]
-    early_score = min(Decimal(100), Decimal(len(early)) * Decimal(10)); risk_level = str(risk.get("overall_risk", risk.get("risk_level", "UNKNOWN"))).upper(); risk_score = {"LOW": Decimal(100), "MEDIUM": Decimal(60), "HIGH": Decimal(20), "CRITICAL": Decimal(0)}.get(risk_level)
+    early_score = min(Decimal(100), Decimal(len(early)) * Decimal(10))
+    # Older materialized dataset-v2 rows use `level`; preserve their risk meaning.
+    risk_level = str(
+        risk.get("overall_risk", risk.get("risk_level", risk.get("level", "UNKNOWN")))
+    ).upper()
+    risk_score = {"LOW": Decimal(100), "MEDIUM": Decimal(60), "HIGH": Decimal(20), "CRITICAL": Decimal(0)}.get(risk_level)
     values = {"market": market_score or Decimal(0), "smart_money": smart_score or Decimal(0), "early_buyer": early_score, "liquidity": min(Decimal(100), liquidity / Decimal(1000)) if liquidity is not None else Decimal(0), "risk": risk_score or Decimal(0)}
     key = strategy.replace("-", "_").lower()
     if key in {"market_only", "early_buyer_only", "early_buyer", "random", "universe", "universe_baseline"}:
