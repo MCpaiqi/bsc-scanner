@@ -20,6 +20,10 @@ smms dataset build --chain bsc --from 2026-09-14T11:22:48+00:00 --to 2026-09-14T
 smms backtest --dataset bsc-canonical-v3-20260914 --strategy composite
 ```
 
-实时 Alpha 的覆盖证明、完成状态，以及 Forward 的取价容差和回撤公式仍在
-可靠性改进范围内，见 [验收清单](RESEARCH_RELIABILITY.md)。本次数据集修复
-不代表这些评价链路已经完成验收。
+Forward 从 `forward-v2` 起使用有来源的美元价格、有限取价容差和正确的峰值
+回撤；与历史回测共用 `price-path-v2` 算法，并保留旧版结果。
+详见 [前瞻评价口径](FORWARD_EVALUATION.md)。
+
+实时 Alpha 的完整覆盖证明、完成状态，以及既有派生数据的完整失效/重建链路
+仍在改进范围内，见 [验收清单](RESEARCH_RELIABILITY.md)。Forward 的观测价格
+路径不能替代完整区块覆盖证明。

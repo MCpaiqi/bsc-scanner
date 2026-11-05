@@ -35,7 +35,7 @@ from .entities import (
     WalletTokenPosition,
     WalletTransaction,
 )
-from .live import LiveSignalObservation, LiveSignalOutcome
+from .live import ForwardEvaluationCursor, LiveSignalObservation, LiveSignalOutcome
 from .market import AlphaSnapshot, TokenMarketSnapshot
 from .radar import RadarCandidate, RadarCandidateEvidence, RadarCandidateHistory
 from .runtime import EvidenceObservationRecord, RuntimeWorkerStatus, WorkerHeartbeat
@@ -52,6 +52,7 @@ __all__ = [
     "EarlyBuyer",
     "EventType",
     "EvidenceObservationRecord",
+    "ForwardEvaluationCursor",
     "IngestionRun",
     "LiveSignalObservation",
     "LiveSignalOutcome",

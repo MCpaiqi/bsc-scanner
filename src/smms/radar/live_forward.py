@@ -2,26 +2,36 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from statistics import median
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from smms.chains.constants import BSC_CHAIN_ID
 from smms.db.models import (
+    ForwardEvaluationCursor,
     LiveSignalObservation,
     LiveSignalOutcome,
-    MarketEvent,
     RadarCandidate,
     Signal,
     Token,
 )
+from smms.evaluation import (
+    ENDPOINT_TOLERANCE,
+    FORWARD_EVALUATION_VERSION,
+    evaluate_price_path,
+    positive_price,
+)
+from smms.radar.forward_prices import load_usd_prices
 
 HORIZONS = (("30s", 30), ("1m", 60), ("5m", 300), ("15m", 900), ("30m", 1800), ("1h", 3600), ("4h", 14400), ("24h", 86400))
 OBSERVED_CLASSES = {"WATCH", "INTERESTING", "HIGH_SIGNAL", "REJECTED", "MARKET_BASELINE"}
+ENTRY_MAX_AGE = timedelta(seconds=30)
+RETRY_INTERVAL = timedelta(seconds=60)
 
 
 def _utc(value: datetime) -> datetime:
@@ -30,9 +40,10 @@ def _utc(value: datetime) -> datetime:
 
 def _decimal(value: Any) -> Decimal | None:
     try:
-        return None if value is None or str(value).upper() == "UNKNOWN" else Decimal(str(value))
+        result = None if value is None or str(value).upper() == "UNKNOWN" else Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         return None
+    return result if result is not None and result.is_finite() else None
 
 
 def _sample_rejected(token: str, observed_at: datetime, rate: int = 10) -> bool:
@@ -63,7 +74,6 @@ def record_observation(
         return existing
     signal = session.get(Signal, candidate.latest_signal_id) if candidate.latest_signal_id else None
     features = dict(candidate.features_json or {})
-    price = _decimal(features.get("price")) or (signal.entry_price if signal else None)
     market_cap = _decimal(features.get("market_cap")) or (signal.market_cap if signal else None)
     liquidity = _decimal(features.get("liquidity")) or (signal.entry_liquidity if signal else None)
     observed_at = _utc(at)
@@ -74,12 +84,26 @@ def record_observation(
         return None
     if signal_class == "REJECTED" and not _sample_rejected(token.address, observed_at):
         sample_group = "REJECTED_UNSAMPLED"
+    entries = load_usd_prices(
+        session, [(token.address, observed_at - ENTRY_MAX_AGE, observed_at)], as_of=observed_at,
+    ).get(token.address, [])
+    latest_time = max((p.timestamp for p in entries), default=None)
+    entry = min((p for p in entries if p.timestamp == latest_time),
+                key=lambda p: p.reference, default=None)
+    price = entry.price if entry else None
+    entry_source = dict(entry.provenance) if entry else None
     snapshot = {
         "token": token.address,
         "observed_at": observed_at.isoformat(),
         "signal_class": signal_class,
         "signal_score": str(signal.signal_strength) if signal and signal.signal_strength is not None else None,
         "price": str(price) if price is not None else None,
+        "entry_price_exact": str(price) if price is not None else None,
+        "price_basis": "USD" if entry else "UNKNOWN",
+        "entry_source": entry_source,
+        "entry_max_age_seconds": int(ENTRY_MAX_AGE.total_seconds()),
+        "pair_address": entry_source["pair_address"] if entry_source else None,
+        "reason": reason,
         "market_cap": str(market_cap) if market_cap is not None else None,
         "liquidity": str(liquidity) if liquidity is not None else None,
         "smart_money_snapshot_id": candidate.smart_snapshot_id,
@@ -107,9 +131,11 @@ def record_observation(
         sample_group=sample_group,
         t0_snapshot_json=snapshot,
     )
-    session.add(row)
     try:
         with session.begin_nested():
+            session.add(row)
+            session.flush()
+            session.add_all(_new_outcomes(row))
             session.flush()
     except IntegrityError:
         return session.scalar(select(LiveSignalObservation).where(
@@ -119,73 +145,129 @@ def record_observation(
     return row
 
 
-def _prices(session: Session, observation: LiveSignalObservation, end: datetime) -> list[MarketEvent]:
-    return list(session.scalars(select(MarketEvent).where(
-        MarketEvent.chain_id == BSC_CHAIN_ID
-        if observation.chain == "bsc"
-        else MarketEvent.chain_id.is_(None),
-        MarketEvent.token_address == observation.token_address,
-        MarketEvent.timestamp >= observation.observed_at,
-        MarketEvent.timestamp <= end,
-        MarketEvent.price.is_not(None),
-    ).order_by(MarketEvent.timestamp, MarketEvent.id)).all())
+def _new_outcomes(observation: LiveSignalObservation) -> list[LiveSignalOutcome]:
+    return [LiveSignalOutcome(
+        observation_id=observation.id, horizon=horizon,
+        target_at=_utc(observation.observed_at) + timedelta(seconds=seconds),
+        next_evaluation_at=_utc(observation.observed_at) + timedelta(seconds=seconds),
+        evaluation_version=FORWARD_EVALUATION_VERSION,
+    ) for horizon, seconds in HORIZONS]
 
 
-def evaluate_due(session: Session, *, at: datetime | None = None) -> int:
-    """Retry due horizons; rows remain PENDING when the provider has no price yet."""
+def _initialize_outcomes(session: Session, *, batch_size: int) -> None:
+    """Repair a bounded observation slice; wrap to catch late lower-ID commits.
+
+    New production observations enqueue atomically. This sweep repairs legacy
+    imports and partial backfills without assuming ID order equals commit order.
+    """
+    if session.get_bind().dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+    else:
+        from sqlalchemy.dialects.sqlite import insert
+    session.execute(insert(ForwardEvaluationCursor).values(
+        evaluation_version=FORWARD_EVALUATION_VERSION, last_observation_id=0,
+    ).on_conflict_do_nothing(index_elements=["evaluation_version"]))
+    cursor = session.scalar(select(ForwardEvaluationCursor).where(
+        ForwardEvaluationCursor.evaluation_version == FORWARD_EVALUATION_VERSION,
+    ).with_for_update())
+    observations = session.scalars(select(LiveSignalObservation).where(
+        LiveSignalObservation.id > cursor.last_observation_id, LiveSignalObservation.chain == "bsc",
+    ).order_by(LiveSignalObservation.id).limit(batch_size)).all()
+    if not observations:
+        cursor.last_observation_id = 0
+        return
+    existing = {(row.observation_id, row.horizon) for row in session.scalars(
+        select(LiveSignalOutcome).where(
+            LiveSignalOutcome.observation_id.in_([o.id for o in observations]),
+            LiveSignalOutcome.evaluation_version == FORWARD_EVALUATION_VERSION,
+        )
+    )}
+    for observation in observations:
+        session.add_all([row for row in _new_outcomes(observation)
+                         if (row.observation_id, row.horizon) not in existing])
+    cursor.last_observation_id = observations[-1].id
+    session.flush()
+
+
+def evaluate_due(session: Session, *, at: datetime | None = None, batch_size: int = 256) -> int:
+    """Evaluate bounded, persistent due work; missing evidence remains retryable."""
+    if not 1 <= batch_size <= 2000:
+        raise ValueError("batch_size must be between 1 and 2000")
     now = _utc(at or datetime.now(UTC))
+    _initialize_outcomes(session, batch_size=batch_size)
+    due = session.scalars(select(LiveSignalOutcome).where(
+        LiveSignalOutcome.evaluation_version == FORWARD_EVALUATION_VERSION,
+        LiveSignalOutcome.status == "PENDING", LiveSignalOutcome.target_at <= now,
+        LiveSignalOutcome.next_evaluation_at <= now,
+    ).order_by(LiveSignalOutcome.next_evaluation_at, LiveSignalOutcome.id)
+        .limit(batch_size).with_for_update(skip_locked=True)).all()
+    if not due:
+        return 0
+    observations = {row.id: row for row in session.scalars(select(LiveSignalObservation).where(
+        LiveSignalObservation.id.in_({item.observation_id for item in due}),
+    ))}
+    ranges = [(observations[item.observation_id].token_address,
+               _utc(observations[item.observation_id].observed_at),
+               _utc(item.target_at) + ENDPOINT_TOLERANCE) for item in due]
+    prices = load_usd_prices(session, ranges, as_of=now)
     changed = 0
-    for observation in session.scalars(select(LiveSignalObservation)).all():
-        t0_price = observation.price
-        if t0_price is None or t0_price <= 0:
-            for horizon, seconds in HORIZONS:
-                _ensure_pending(session, observation, horizon, observation.observed_at + timedelta(seconds=seconds))
+    for outcome in due:
+        observation = observations[outcome.observation_id]
+        entry = observation.t0_snapshot_json or {}
+        outcome.evaluated_at = now
+        outcome.next_evaluation_at = now + RETRY_INTERVAL
+        outcome.endpoint_tolerance_seconds = int(ENDPOINT_TOLERANCE.total_seconds())
+        if entry.get("price_basis") != "USD":
+            outcome.error_code = "PRICE_BASIS_UNKNOWN"
             continue
-        for horizon, seconds in HORIZONS:
-            target_at = _utc(observation.observed_at) + timedelta(seconds=seconds)
-            outcome = _ensure_pending(session, observation, horizon, target_at)
-            if outcome.status == "COMPLETE" or target_at > now:
-                continue
-            points = _prices(session, observation, now)
-            endpoint = next((p for p in points if _utc(p.timestamp) >= target_at), None)
-            if endpoint is None:
-                outcome.status = "PENDING"
-                outcome.error_code = "MISSING_PRICE"
-                continue
-            window = [p for p in points if _utc(p.timestamp) <= _utc(endpoint.timestamp)]
-            returns = [(_decimal(p.price) / t0_price) - 1 for p in window if _decimal(p.price) is not None]
-            if not returns:
-                continue
-            endpoint_return = (_decimal(endpoint.price) / t0_price) - 1
-            max_return = max(returns)
-            max_drawdown = min((r - max(running for running in returns[:i + 1])) for i, r in enumerate(returns))
-            liquidity_failure = any(_decimal(getattr(p, "liquidity", None)) is not None and observation.liquidity is not None and _decimal(getattr(p, "liquidity", None)) <= observation.liquidity * Decimal("0.10") for p in window)
-            outcome.return_pct = endpoint_return
-            outcome.max_return_pct = max_return
-            outcome.max_drawdown_pct = max_drawdown
-            outcome.target_hit = max_return >= 1
-            outcome.stop_hit = max_drawdown <= Decimal("-0.50")
-            outcome.liquidity_failure = liquidity_failure
-            outcome.rug = liquidity_failure or endpoint_return <= Decimal("-0.90")
-            outcome.endpoint_price = _decimal(endpoint.price)
-            outcome.evaluated_at = now
-            outcome.status = "COMPLETE"
-            outcome.error_code = None
-            changed += 1
+        t0_price = positive_price(entry.get("entry_price_exact") or entry.get("price")
+                                  or observation.price)
+        if t0_price is None:
+            outcome.error_code = "MISSING_ENTRY_PRICE"
+            continue
+        pair = entry.get("pair_address")
+        points = [p for p in prices.get(observation.token_address, [])
+                  if not pair or p.provenance["pair_address"] == pair]
+        result = evaluate_price_path(
+            t0_price, observation.observed_at, points,
+            horizon=_utc(outcome.target_at) - _utc(observation.observed_at), at=now,
+        )
+        if result is None:
+            outcome.error_code = "MISSING_PRICE"
+            continue
+        liquidity = [value for p in result.path if p.provenance
+                     and (value := _decimal(p.provenance.get("liquidity_usd"))) is not None]
+        liquidity_failure = (any(value <= observation.liquidity * Decimal("0.10")
+                                 for value in liquidity)
+                             if observation.liquidity is not None and liquidity else None)
+        digest = hashlib.sha256()
+        for point in result.path:
+            digest.update(json.dumps([point.timestamp.isoformat(), str(point.price), point.reference],
+                                     separators=(",", ":")).encode())
+        outcome.return_pct = result.return_pct
+        outcome.max_return_pct = result.high_return
+        outcome.max_drawdown_pct = result.max_drawdown
+        outcome.target_hit = result.high_return >= 1
+        outcome.stop_hit = result.low_return <= Decimal("-0.50")
+        outcome.liquidity_failure = liquidity_failure
+        outcome.rug = bool(liquidity_failure or result.low_return <= Decimal("-0.90"))
+        outcome.endpoint_price = result.endpoint.price
+        outcome.endpoint_at = result.endpoint.timestamp
+        outcome.endpoint_offset_seconds = Decimal(str(result.endpoint_offset_seconds))
+        outcome.provenance_json = {
+            "price_basis": "USD", "entry": entry.get("entry_source"),
+            "entry_price_exact": str(t0_price), "endpoint": dict(result.endpoint.provenance),
+            "return_pct_exact": str(result.return_pct),
+            "max_return_pct_exact": str(result.high_return),
+            "max_drawdown_pct_exact": str(result.max_drawdown),
+            "path_count": len(result.path), "path_digest": digest.hexdigest(),
+            "path_semantics": "OBSERVED_PRICE_PATH", "stop_basis": "ENTRY_RETURN",
+        }
+        outcome.status = "COMPLETE"
+        outcome.error_code = None
+        changed += 1
     session.flush()
     return changed
-
-
-def _ensure_pending(session: Session, observation: LiveSignalObservation, horizon: str, target_at: datetime) -> LiveSignalOutcome:
-    row = session.scalar(select(LiveSignalOutcome).where(
-        LiveSignalOutcome.observation_id == observation.id,
-        LiveSignalOutcome.horizon == horizon,
-    ))
-    if row is None:
-        row = LiveSignalOutcome(observation_id=observation.id, horizon=horizon, target_at=target_at, status="PENDING")
-        session.add(row)
-        session.flush()
-    return row
 
 
 def performance(
@@ -193,12 +275,19 @@ def performance(
 ) -> dict[str, Any]:
     if evaluate:
         evaluate_due(session, at=at)
-    rows = session.scalars(select(LiveSignalObservation)).all()
+    cutoff = _utc(at or datetime.now(UTC))
+    rows = session.scalars(select(LiveSignalObservation).where(
+        LiveSignalObservation.observed_at <= cutoff,
+    )).all()
     observations_by_id = {row.id: row for row in rows}
-    outcomes = session.scalars(select(LiveSignalOutcome).where(LiveSignalOutcome.status == "COMPLETE")).all()
+    outcomes = session.scalars(select(LiveSignalOutcome).where(
+        LiveSignalOutcome.status == "COMPLETE",
+        LiveSignalOutcome.evaluation_version == FORWARD_EVALUATION_VERSION,
+        LiveSignalOutcome.evaluated_at <= cutoff,
+    )).all()
     groups = {"HIGH_SIGNAL": [], "WATCH": [], "REJECTED": [], "INTERESTING": []}
     for outcome in outcomes:
-        observation = next((item for item in rows if item.id == outcome.observation_id), None)
+        observation = observations_by_id.get(outcome.observation_id)
         if observation and observation.sample_group in groups:
             groups[observation.sample_group].append(outcome)
     groups["MARKET_BASELINE"] = [
@@ -209,9 +298,14 @@ def performance(
     ]
     def summary(items: list[LiveSignalOutcome]) -> dict[str, Any]:
         returns = sorted(float(x.return_pct) for x in items if x.return_pct is not None)
-        return {"sample_count": len(items), "median_return": returns[len(returns) // 2] if returns else None,
+        return {"sample_count": len(items), "median_return": median(returns) if returns else None,
                 "win_rate": (sum(r > 0 for r in returns) / len(returns)) if returns else None,
                 "2x_rate": (sum(bool(x.target_hit) for x in items) / len(items)) if items else None,
                 "rug_rate": (sum(bool(x.rug) for x in items) / len(items)) if items else None,
                 "max_drawdown": min((float(x.max_drawdown_pct) for x in items if x.max_drawdown_pct is not None), default=None)}
-    return {"mode": "FORWARD_OBSERVATION", "horizons": {h: {group: summary([x for x in items if x.horizon == h]) for group, items in groups.items()} for h, _ in HORIZONS}}
+    return {"mode": "FORWARD_OBSERVATION", "evaluation_version": FORWARD_EVALUATION_VERSION,
+            "as_of": cutoff.isoformat(),
+            "endpoint_tolerance_seconds": int(ENDPOINT_TOLERANCE.total_seconds()),
+            "path_semantics": "OBSERVED_PRICE_PATH",
+            "horizons": {h: {group: summary([x for x in items if x.horizon == h])
+                             for group, items in groups.items()} for h, _ in HORIZONS}}

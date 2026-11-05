@@ -17,7 +17,7 @@ explicit UNKNOWN states. Preserve existing local data and untracked source.
   features, outcomes or newly aggregated risk; genuine losers remain in the universe.
 - [ ] R4: Alpha negatives require complete horizon coverage; missing coverage stays
   UNKNOWN; pending work survives downtime; result versions and denominators are explicit.
-- [ ] R5: forward endpoints respect a bounded time tolerance and canonical facts;
+- [x] R5: forward endpoints respect a bounded time tolerance and canonical facts;
   drawdown uses price / running peak - 1; historical and live evaluation agree.
 - [ ] R6: normal and deferred candidate projections have equivalent audit/baseline/
   rule effects; event fanout happens after commit and survives retry without ghosts.
@@ -96,6 +96,45 @@ fix. Record verified changes and remaining requirements below.
   full-topology/live-provider verification remains R14. R4–R14, rewriting old
   results, and baseline strategies intentionally ignoring risk are not asserted
   complete by this batch. No provider calls or baseline policy changes were made.
+
+### Forward evaluation batch, 2026-11-05
+
+- Previous goal turn was verified progress, commit `2093841`. This batch implements
+  R5 with `price-path-v2` shared by historical/live evaluation and `forward-v2`
+  persisted outcomes. It does not close R4 Alpha coverage or R3 dependency rebuild.
+- Added explicit USD entry/future source checks, canonical token/pair/time filtering,
+  nearest ±5s endpoints, true peak drawdown including entry, recipe/source/path
+  provenance, and performance as-of filtering. Unknown entry units remain UNKNOWN;
+  no legacy units or numbers are silently rewritten.
+- Migration `20261105_0035` preserves existing outcomes as `legacy-v1`, permits
+  current results alongside them, records retries and endpoint metadata, and
+  refuses a lossy downgrade. Return NUMERIC storage no longer has the six-integer-
+  digit cap. Historical backtest summaries identify their evaluation recipe.
+- Ruling: execute the localized Forward work before durable Alpha coverage, while
+  keeping the entire original objective. Ruling: require explicit USD evidence
+  rather than guessing a basis for old generic prices. Ruling: atomically enqueue
+  production observations' tasks and cyclically repair bounded historical slices;
+  never assume database IDs follow commit order. Ruling: widen numeric storage and
+  retain calculation strings rather than clipping legitimate finite returns.
+- Fresh independent review found an ID/commit-order loss and a NUMERIC overflow
+  that could roll back neighboring work. Both were reproduced against real
+  PostgreSQL before correction; new regressions now prove their fixes. The reviewer
+  reported no additional actionable minors. R3 transitive invalidation, R4 complete
+  coverage and deployment/providers/throughput were explicitly outside this review
+  and remain open programme requirements.
+- Final verification: full backend **487 passed, 4 skipped, 13 existing warnings**;
+  web **40 passed**, typecheck/build passed; Ruff and diff whitespace checks passed.
+  Two added skips require explicit isolated PostgreSQL (migration test and genuine
+  two-writer visibility). The two pre-existing optional DB skips remain.
+- Isolated PostgreSQL run: **37 passed**, comprising 30 database Forward cases,
+  6 pure calculation cases and 1 real historical migration test. Tests include
+  legacy 0034→0035 data preservation/current coexistence, refused lossy downgrade,
+  late lower-ID commit visibility, persistence of a `999999999999` return next to
+  normal work, and retry/cursor behavior after creating a new Session.
+- R11 is only partially advanced: due/repair task counts are bounded and prices
+  are fetched by merged token/time ranges. Very dense path streaming/caps, Alpha
+  quadratic VWAP work and global runtime acceptance remain pending.
+- Policy/reproduction details: [FORWARD_EVALUATION.md](FORWARD_EVALUATION.md).
 
 ## Reproducing the foundation regressions
 

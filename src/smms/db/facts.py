@@ -7,9 +7,10 @@ records; an explicit removed/orphaned marker is never usable research evidence.
 
 from sqlalchemy.sql.elements import ColumnElement
 
-from smms.db.models import MarketEvent, Pair, TokenLifecycleEvent, TradeEvent
+from smms.db.models import MarketEvent, Pair, TokenLifecycleEvent, TokenMarketSnapshot, TradeEvent
 
-FactModel = type[Pair] | type[TradeEvent] | type[MarketEvent] | type[TokenLifecycleEvent]
+FactModel = (type[Pair] | type[TradeEvent] | type[MarketEvent] | type[TokenLifecycleEvent]
+             | type[TokenMarketSnapshot])
 
 
 def canonical_fact_conditions(model: FactModel) -> tuple[ColumnElement[bool], ...]:
