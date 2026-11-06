@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -10,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, func, select
 
 from smms.alpha.live import SCORE_VERSION
+from smms.alpha.policy import COHORT_SECONDS, HIGH_SCORE, LABEL_VERSION, policy_id
 from smms.api.alpha_metadata import load_alpha_metadata
 from smms.chains.constants import BSC_CHAIN_ID, validate_bsc_chain
 from smms.config.settings import get_settings
@@ -43,7 +45,8 @@ def _alpha_payload(row: AlphaSnapshot, *, now: datetime, metadata: dict | None =
         "pair_created_at": row.pair_created_at, "snapshot_at": row.snapshot_at,
         "observation_seconds": row.observation_seconds,
         "current_age_seconds": current_age_seconds,
-        "alpha_score": float(row.alpha_score),
+        "alpha_score": float(row.alpha_score) if row.alpha_score is not None else None,
+        "task_status": row.task_status,
         "score_version": row.score_version, "status": "EXPERIMENTAL ALPHA / SHADOW MODE",
         "components": row.components_json, "features": row.features_json,
         "positive_reasons": row.positive_reasons, "negative_reasons": row.negative_reasons,
@@ -68,13 +71,16 @@ def _fresh_alpha_latest_rows(sync, *, now: datetime, fresh_seconds: int, limit: 
             AlphaSnapshot.pair_address.label("pair_address"),
             func.max(AlphaSnapshot.snapshot_at).label("snapshot_at"),
         )
-        .where(AlphaSnapshot.chain == "bsc", AlphaSnapshot.score_version == SCORE_VERSION, AlphaSnapshot.pair_created_at >= cutoff)
+        .where(AlphaSnapshot.chain == "bsc", AlphaSnapshot.score_version == SCORE_VERSION,
+               AlphaSnapshot.alpha_score.is_not(None), AlphaSnapshot.task_status.in_(("TRACKING", "COMPLETE")),
+               AlphaSnapshot.snapshot_at <= now, AlphaSnapshot.pair_created_at >= cutoff)
         .group_by(AlphaSnapshot.token_address, AlphaSnapshot.pair_address)
         .subquery()
     )
     return sync.scalars(
         select(AlphaSnapshot)
-        .where(AlphaSnapshot.chain == "bsc", AlphaSnapshot.score_version == SCORE_VERSION)
+        .where(AlphaSnapshot.chain == "bsc", AlphaSnapshot.score_version == SCORE_VERSION,
+               AlphaSnapshot.alpha_score.is_not(None), AlphaSnapshot.task_status.in_(("TRACKING", "COMPLETE")))
         .join(
             fresh,
             and_(
@@ -112,6 +118,7 @@ async def alpha_candidate(token_or_pair: str):
         rows = await session.run_sync(lambda sync: sync.scalars(
             select(AlphaSnapshot)
             .where(AlphaSnapshot.chain == "bsc", AlphaSnapshot.score_version == SCORE_VERSION)
+            .where(AlphaSnapshot.alpha_score.is_not(None), AlphaSnapshot.task_status.in_(("TRACKING", "COMPLETE")))
             .where((AlphaSnapshot.token_address == token_or_pair.lower()) | (AlphaSnapshot.pair_address == token_or_pair.lower()))
             .order_by(AlphaSnapshot.observation_seconds)
         ).all())
@@ -129,18 +136,38 @@ async def alpha_candidate(token_or_pair: str):
 async def alpha_stats():
     settings = get_settings()
     async with session_scope(settings) as session:
-        rows = await session.run_sync(lambda sync: sync.scalars(select(AlphaSnapshot).where(AlphaSnapshot.chain == "bsc", AlphaSnapshot.score_version == SCORE_VERSION)).all())
-    now = datetime.now(UTC)
-    mature = [
-        row for row in rows
-        if (now - _utc_datetime(row.snapshot_at)).total_seconds() >= 3600
-        and row.max_realisable_return is not None
-    ]
-    high = [row for row in mature if float(row.alpha_score) >= 70]
-    def rate(items, threshold):
-        hits = sum(1 for row in items if (row.outcome_json or {}).get(f"reached_{threshold}x"))
-        return {"hits": hits, "denominator": len(items), "rate": hits / len(items) if items else None}
-    return {"score_version": SCORE_VERSION, "scored_tokens": len({row.token_address for row in rows}), "high_score_tokens": len({row.token_address for row in rows if float(row.alpha_score) >= 70}), "matured_1h": len(mature), "overall": {str(n): rate(mature, n) for n in (2, 3, 5, 10)}, "high_score": {str(n): rate(high, n) for n in (2, 3, 5, 10)}}
+        return await session.run_sync(lambda sync: alpha_statistics(
+            sync, now=datetime.now(UTC), minimum_quote=Decimal(str(settings.alpha_min_future_quote_notional)),
+        ))
+
+
+def alpha_statistics(sync, *, now, minimum_quote):
+    """Aggregate a fixed 1m pair cohort; partial positives never enter rates."""
+    current = (AlphaSnapshot.chain == "bsc", AlphaSnapshot.score_version == SCORE_VERSION)
+    scored = (*current, AlphaSnapshot.alpha_score.is_not(None),
+              AlphaSnapshot.task_status.in_(("TRACKING", "COMPLETE")))
+    def count(*conditions, tokens=False):
+        expression = func.count(func.distinct(AlphaSnapshot.token_address)) if tokens else func.count()
+        return sync.scalar(select(expression).select_from(AlphaSnapshot).where(*conditions)) or 0
+    cohort = (*scored, AlphaSnapshot.observation_seconds == COHORT_SECONDS,
+              AlphaSnapshot.task_status == "COMPLETE", AlphaSnapshot.snapshot_at <= now - timedelta(hours=1),
+              AlphaSnapshot.outcome_json["policy_id"].as_string() == policy_id(minimum_quote),
+              AlphaSnapshot.outcome_json["tracking_complete"].as_boolean().is_(True),
+              AlphaSnapshot.outcome_json["entry_coverage"]["status"].as_string() == "VERIFIED",
+              AlphaSnapshot.outcome_json["future_coverage"]["status"].as_string() == "VERIFIED")
+    def rates(high=False):
+        conditions = (*cohort, AlphaSnapshot.alpha_score >= HIGH_SCORE) if high else cohort
+        denominator = count(*conditions)
+        return {str(n): {"hits": (hits := count(*conditions, AlphaSnapshot.outcome_json[f"reached_{n}x"].as_boolean().is_(True))),
+                         "denominator": denominator, "rate": hits / denominator if denominator else None}
+                for n in (2, 3, 5, 10)}
+    return {"score_version": SCORE_VERSION, "label_version": LABEL_VERSION,
+            "policy_id": policy_id(minimum_quote), "cohort_seconds": COHORT_SECONDS,
+            "coverage_requirement": "VERIFIED_ENTRY_AND_FULL_1H",
+            "scored_tokens": count(*scored, tokens=True),
+            "high_score_tokens": count(*scored, AlphaSnapshot.alpha_score >= HIGH_SCORE, tokens=True),
+            "pending_snapshots": count(*current, AlphaSnapshot.task_status.in_(("PENDING_INPUT", "TRACKING"))),
+            "matured_1h": count(*cohort), "overall": rates(), "high_score": rates(True)}
 
 
 @router.get("")

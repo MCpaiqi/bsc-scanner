@@ -24,6 +24,8 @@ Forward 从 `forward-v2` 起使用有来源的美元价格、有限取价容差�
 回撤；与历史回测共用 `price-path-v2` 算法，并保留旧版结果。
 详见 [前瞻评价口径](FORWARD_EVALUATION.md)。
 
-实时 Alpha 的完整覆盖证明、完成状态，以及既有派生数据的完整失效/重建链路
-仍在改进范围内，见 [验收清单](RESEARCH_RELIABILITY.md)。Forward 的观测价格
-路径不能替代完整区块覆盖证明。
+实时 Alpha 从 `experimental-v3` 起使用持久化扫描回执证明覆盖，缺证据保持
+UNKNOWN，未完成任务在停机后继续重试。命中率只统计同一执行口径下完整覆盖的
+1 分钟样本，见 [Alpha 覆盖与恢复](ALPHA_COVERAGE.md)。Forward 的观测价格路径
+不能替代完整区块覆盖证明。旧派生数据的完整失效/重建仍属于
+[验收清单](RESEARCH_RELIABILITY.md) 中未完成的 R3。

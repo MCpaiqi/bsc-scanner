@@ -534,15 +534,86 @@ async def run_forward() -> None:
         await asyncio.sleep(30)
 
 
+async def _alpha_scan_with_heartbeat(fetch, provider, claim, *, confirmations, chunk_size, interval):
+    task = asyncio.create_task(fetch(provider, claim, confirmations=confirmations, chunk_size=chunk_size))
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=min(30, max(0.01, interval)))
+            if done:
+                return task.result()
+            await heartbeat("alpha-coverage", "RUNNING", current_job=str(claim.job_id),
+                            details={"from_block": claim.start, "generation": claim.generation})
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def run_alpha_coverage() -> None:
+    """Independent retryable coverage owner; no Forward or Redis dependency."""
+    from smms.alpha.collector import claim_work, fetch_scan, persist_scan, retry_claim
+    from smms.chains.bsc.rpc import BSCProvider
+
+    settings = get_settings()
+    factories = {value.strip().lower() for value in (settings.bsc_dex_factory_addresses or "").split(",")
+                 if value.strip()}
+    provider = BSCProvider(settings, verify_on_use=True) if settings.bsc_rpc_endpoints else None
+    verified = False
+    while True:
+        claim = None
+        try:
+            if provider is None or not factories:
+                await heartbeat("alpha-coverage", "DEGRADED", details={"reason": "RPC_OR_FACTORY_NOT_CONFIGURED"})
+                await asyncio.sleep(30)
+                continue
+            if not verified:
+                await provider.ensure_usable()
+                if await provider.get_chain_id() != 56:
+                    raise ValueError("coverage requires BSC")
+                for factory in factories:
+                    if not (await provider.verify_factory(factory)).get("deployed"):
+                        raise ValueError("coverage factory not deployed")
+                verified = True
+            async with session_scope(settings) as session:
+                claim = await session.run_sync(lambda sync: claim_work(sync, now=datetime.now(UTC), factories=factories))
+                await session.commit()  # release DB connection ownership before RPC
+            if claim is None:
+                await heartbeat("alpha-coverage", "RUNNING", details={"state": "IDLE"})
+                await asyncio.sleep(5)
+                continue
+            await heartbeat("alpha-coverage", "RUNNING", current_job=str(claim.job_id),
+                            details={"from_block": claim.start, "generation": claim.generation})
+            scan = await _alpha_scan_with_heartbeat(
+                fetch_scan, provider, claim, confirmations=max(1, settings.bsc_confirmation_depth),
+                chunk_size=min(1000, settings.bsc_log_chunk_size), interval=settings.runtime_heartbeat_interval_seconds,
+            )
+            async with session_scope(settings) as session:
+                await persist_scan(session, claim, scan, now=datetime.now(UTC))
+                await session.commit()
+        except (DataUnavailable, OSError, RuntimeError, ValueError, SQLAlchemyError) as exc:
+            # Persist only safe error codes; RPC exceptions may contain credentials.
+            error_code = type(exc).__name__
+            if claim is not None:
+                async with session_scope(settings) as session:
+                    await session.run_sync(lambda sync, active_claim=claim, code=error_code: retry_claim(
+                        sync, active_claim, now=datetime.now(UTC), error=code,
+                    ))
+                    await session.commit()
+            await heartbeat("alpha-coverage", "DEGRADED", details={"reason": error_code})
+            await asyncio.sleep(10)
+        await asyncio.sleep(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("worker", choices=("bsc-ingestion", "bsc-live-tail", "radar-worker", "forward-worker"))
+    parser.add_argument("worker", choices=("bsc-ingestion", "bsc-live-tail", "radar-worker", "forward-worker", "alpha-coverage"))
     worker = parser.parse_args().worker
     asyncio.run({
         "bsc-ingestion": run_bsc,
         "bsc-live-tail": run_bsc_live_tail,
         "radar-worker": run_radar,
         "forward-worker": run_forward,
+        "alpha-coverage": run_alpha_coverage,
     }[worker]())
 
 

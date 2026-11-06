@@ -478,7 +478,13 @@ def test_human_and_raw_price_basis_are_never_mixed() -> None:
 
 def test_live_alpha_snapshot_is_point_in_time_and_idempotent() -> None:
     with _session() as session:
-        _pair(session)
+        from test_phase9_0_5_integrity import covered_pair
+
+        from smms.db.models import AlphaCoverageReceipt
+
+        covered_pair(session)
+        proof = session.query(AlphaCoverageReceipt).one()
+        proof.end_at = proof.completed_at = T0 + timedelta(seconds=300)
         session.add_all([
             _trade(T0 + timedelta(seconds=10), tx="early", price_quote="1", quote="1", token="1"),
             _trade(T0 + timedelta(seconds=45), tx="late", price_quote="100", quote="10", token="0.1"),

@@ -357,6 +357,8 @@ class BSCMarketPipeline:
             for key, value in values.items():
                 if value is not None:
                     setattr(pair, key, value)
+        from smms.alpha.work import register_pair
+        await self.session.run_sync(lambda sync: register_pair(sync, pair))
         return pair
 
     async def _persist_event(self, record: MarketEventRecord) -> MarketEvent:

@@ -506,6 +506,7 @@ class BSCRealtimeIngestionService:
         from smms.market.pipeline import BSCMarketPipeline
 
         start = max(0, int(latest) - int(lookback))
+        observed_at = datetime.now(UTC)
         canonical: dict[int, str] = {}
         for number in range(start, int(latest) + 1):
             getter = getattr(self.chain_provider, "get_block", None)
@@ -516,6 +517,10 @@ class BSCRealtimeIngestionService:
                 canonical[number] = str(block.block_hash).lower()
         if not canonical:
             return 0
+        from smms.alpha.work import anchor_blocks
+        canonical, changed_anchors = await self.session.run_sync(lambda sync: anchor_blocks(
+            sync, canonical, observed_at=observed_at, authoritative=True,
+        ))
         rows = (await self.session.scalars(select(RawChainEvent).where(
             RawChainEvent.chain_id == self.chain_id,
             RawChainEvent.block_number >= start,
@@ -523,6 +528,7 @@ class BSCRealtimeIngestionService:
             RawChainEvent.removed.is_(False),
         ))).all()
         invalidated = 0
+        orphan_blocks: list[int] = list(changed_anchors)
         pipeline = BSCMarketPipeline(
             self.session,
             active_pair_registry=self.active_pair_registry,
@@ -536,6 +542,7 @@ class BSCRealtimeIngestionService:
                 from smms.radar.hooks import revalidate
                 await revalidate(self.session, raw)
                 invalidated += 1
+                orphan_blocks.append(int(raw.block_number))
         # PairCreated facts may predate raw-event persistence (for example
         # after a worker restart). Compare their stored creation hash directly
         # so an orphan cannot be restored into the live registry first.
@@ -553,6 +560,25 @@ class BSCRealtimeIngestionService:
                 pair.removed = True
                 self.active_pair_registry.remove(pair.address, state="ORPHANED")
                 invalidated += 1
+                orphan_blocks.append(int(pair.creation_block))
+        # Empty successful scans also carry fork evidence, even when no raw
+        # event exists to trigger the normal invalidation path.
+        from smms.alpha.work import invalidate_coverage
+        from smms.db.models import AlphaCoverageReceipt
+        receipts = (await self.session.scalars(select(AlphaCoverageReceipt).where(
+            AlphaCoverageReceipt.canonical.is_(True),
+            (AlphaCoverageReceipt.start_block.between(start, int(latest)))
+            | (AlphaCoverageReceipt.end_block.between(start, int(latest))),
+        ))).all()
+        for receipt in receipts:
+            for number, stored in ((receipt.start_block, receipt.start_hash),
+                                   (receipt.end_block, receipt.end_hash)):
+                if number in canonical and stored.lower() != canonical[number]:
+                    orphan_blocks.append(number)
+        if orphan_blocks:
+            await self.session.run_sync(lambda sync: invalidate_coverage(
+                sync, from_block=min(orphan_blocks), now=datetime.now(UTC),
+            ))
         await self.session.flush()
         # Reconciliation is the sole canonical DB owner for this transaction;
         # persist orphan marks before the next polling/replay cycle observes

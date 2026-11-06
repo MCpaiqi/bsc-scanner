@@ -15,14 +15,14 @@ explicit UNKNOWN states. Preserve existing local data and untracked source.
   risk meaning, including CRITICAL, UNKNOWN and legacy dataset payloads.
 - [ ] R3: removed/noncanonical chain facts cannot enter rebuilt historical universe,
   features, outcomes or newly aggregated risk; genuine losers remain in the universe.
-- [ ] R4: Alpha negatives require complete horizon coverage; missing coverage stays
+- [x] R4: Alpha negatives require complete horizon coverage; missing coverage stays
   UNKNOWN; pending work survives downtime; result versions and denominators are explicit.
 - [x] R5: forward endpoints respect a bounded time tolerance and canonical facts;
   drawdown uses price / running peak - 1; historical and live evaluation agree.
 - [ ] R6: normal and deferred candidate projections have equivalent audit/baseline/
   rule effects; event fanout happens after commit and survives retry without ghosts.
 - [ ] R7: SSE reconnect/replay has explicit bounded recovery semantics under bursts.
-- [ ] R8: Alpha score range, available evidence, threshold and UI classifications agree.
+- [x] R8: Alpha score range, available evidence, threshold and UI classifications agree.
 - [ ] R9: complete candidate sorting/filtering/pagination, continuously refreshed
   detail/statistics and separate unavailable/error/stale states are demonstrated.
 - [ ] R10: annotations and token/global alerts have explicit scope and visible save results.
@@ -150,3 +150,45 @@ command. Each sync case creates and removes its own generated `smms_research_*`
 schema; the fixture does not load a URL from `.env`. Ingestion cases deliberately
 use their own in-memory SQLite fixtures. Full migration/runtime acceptance is a
 separate gate; schema creation inside regressions does not prove migration parity.
+
+
+### Alpha coverage batch, 2026-11-06
+
+- R4 and R8 are verified locally. Live `experimental-v3` snapshots are durable
+  pending tasks with nullable scores, frozen quote notional/policy fingerprints
+  and `alpha-shadow-v2` labels. Missing entry or future coverage stays UNKNOWN;
+  pending tasks recover after two days. Legacy scores/labels remain unchanged.
+- A dedicated `alpha-coverage` worker performs bounded confirmed per-pair HTTP
+  scans, validates logs/callers/hashes and atomically persists raw/market/trade
+  facts plus receipts. Empty success is evidence; null/malformed RPC data is an
+  error. Leases, retry times and safe error codes survive restart.
+- Proof requires canonical generation, creation anchor and block/parent continuity.
+  Reconciliation/publication share a database fence, including before the first
+  empty receipt exists. Canonical rediscovery resumes unscored work; scored
+  invalidated history is retained for R3 reconstruction.
+- Rates aggregate one mature 1m token/pair observation with verified full-hour
+  coverage and matching execution policy. Four observation windows cannot
+  multiply the denominator. Observed positives with partial coverage are excluded.
+- The versioned score normalizes actual available activity components to 0–100;
+  the >=70 band is reachable, missing buyer concentration supplies zero, and
+  risk remains UNKNOWN. UI exposes verified versus pending coverage.
+- Fresh read-only review found three material gaps (first-scan fork race,
+  tolerant malformed RPC arrays, canonical rediscovery). All reproduced RED and
+  passed after one fix pass. Creation-block VWAP inclusion and invalidated
+  timestamp rejoin also received failing-then-passing boundary regressions.
+- Final backend **523 passed, 7 skipped, 13 existing warnings**; optional skip
+  paths include explicit isolated PostgreSQL cases. Actual PostgreSQL 16 command
+  passed **39 cases**, including two independent publication/reconciliation
+  connections, commit-order inversion, transactional rollback and historical
+  0035→0036 migration with legacy data and a refused lossy downgrade.
+- Web **41 passed**, TypeScript/build passed; full Ruff, whitespace, Compose config
+  and migration head `20261106_0036` passed. Isolated schema count was zero;
+  the owned PostgreSQL verification container and its anonymous volume were
+  stopped/removed after ownership-label validation. No production DB/provider
+  was accessed and no deploy, merge or push occurred.
+- R3 remains open for automatic versioned reconstruction of already-scored inputs.
+  R6/R7 projection/outbox/replay, R9/R10 workflow, R11 dense-path/VWAP/anchor
+  retention/publication latency, R12 reproducibility/CI, R13 deployment access
+  and R14 full-topology restart/live limitations remain required goal work.
+- Details: [ALPHA_COVERAGE.md](ALPHA_COVERAGE.md). Apply migration 0036 before
+  the updated API/ingestion/Forward/coverage workers are started.

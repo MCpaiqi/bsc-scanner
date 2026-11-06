@@ -67,6 +67,7 @@ class AlphaSnapshot(Base):
         UniqueConstraint("chain", "token_address", "pair_address", "observation_seconds", "score_version", name="uq_alpha_snapshot_window"),
         Index("ix_alpha_snapshot_live", "chain", "snapshot_at", "alpha_score"),
         Index("ix_alpha_snapshot_tracking", "score_version", "snapshot_at"),
+        Index("ix_alpha_snapshot_due", "score_version", "task_status", "next_evaluation_at", "id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -77,18 +78,21 @@ class AlphaSnapshot(Base):
     snapshot_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     age_seconds: Mapped[int] = mapped_column(BigInteger, nullable=False)
     observation_seconds: Mapped[int] = mapped_column(nullable=False)
-    alpha_score: Mapped[Decimal] = mapped_column(Numeric(6, 2), nullable=False)
-    score_version: Mapped[str] = mapped_column(String(64), nullable=False, default="experimental-v2")
+    alpha_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+    score_version: Mapped[str] = mapped_column(String(64), nullable=False, default="experimental-v3")
+    task_status: Mapped[str] = mapped_column(String(32), nullable=False, default="LEGACY", server_default="LEGACY")
+    next_evaluation_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    coverage_generation: Mapped[int | None] = mapped_column()
     scored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     features_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     components_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     positive_reasons: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     negative_reasons: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     warnings: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    entry_vwap: Mapped[Decimal | None] = mapped_column(Decimal18)
-    current_return: Mapped[Decimal | None] = mapped_column(Decimal18)
-    max_tick_return: Mapped[Decimal | None] = mapped_column(Decimal18)
-    max_realisable_return: Mapped[Decimal | None] = mapped_column(Decimal18)
+    entry_vwap: Mapped[Decimal | None] = mapped_column(Numeric())
+    current_return: Mapped[Decimal | None] = mapped_column(Numeric())
+    max_tick_return: Mapped[Decimal | None] = mapped_column(Numeric())
+    max_realisable_return: Mapped[Decimal | None] = mapped_column(Numeric())
     outcome_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 

@@ -694,13 +694,11 @@ class BSCProvider:
                         "address_count": len(address_batch)
                         if isinstance(address_batch, list) else int(bool(address_batch)),
                     })
-                if result is None:
-                    result = []
                 if not isinstance(result, list):
                     raise DataUnavailable("BSC logs payload is invalid")
                 for item in result:
                     if not isinstance(item, dict):
-                        continue
+                        raise DataUnavailable("BSC logs item is invalid")
                     log = self._normalize_log(item)
                     unique[(log.transaction_hash.lower(), log.log_index, log.block_hash)] = log
             chunk_start = chunk_end + 1

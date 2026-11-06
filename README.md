@@ -22,7 +22,9 @@ docker compose up --build
 uvicorn smms.api.app:app --reload
 ```
 
-打开 `http://127.0.0.1:8080/` 即可使用 React Trader Workstation。`/` 默认是工作台，旧版静态页面仅保留在 `/legacy`。标准 Compose 拓扑会同时启动 API、Web、BSC ingestion、Radar audit 和 Forward outcome workers，以及 PostgreSQL、Redis。
+打开 `http://127.0.0.1:8080/` 即可使用 React Trader Workstation。`/` 默认是工作台，旧版静态页面仅保留在 `/legacy`。标准 Compose 拓扑会同时启动 API、Web、BSC ingestion、Radar audit、Forward outcome 和 Alpha coverage workers，以及 PostgreSQL、Redis。
+
+Alpha coverage worker 使用确认后的 HTTP 区块扫描证明数据覆盖；缺证据的目标结果保持 UNKNOWN。当前评分版本为 `experimental-v3`，启动前需完成 `20261106_0036` 迁移，详见 [覆盖与恢复口径](docs/ALPHA_COVERAGE.md)。
 
 无外网时可打开 `http://127.0.0.1:8000/?demo=1` 预览完整卡片交互。该模式只在显式指定时启用，页面会持续标明数据为演示数据，不会在真实行情失败时自动顶替。
 
