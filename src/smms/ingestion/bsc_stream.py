@@ -538,7 +538,7 @@ class BSCRealtimeIngestionService:
             if expected and raw.block_hash and str(raw.block_hash).lower() != expected:
                 raw.removed = True
                 raw.confirmation_status = "orphaned"
-                await pipeline._invalidate_event(raw)
+                await pipeline._invalidate_event(raw, invalidate_research=False)
                 from smms.radar.hooks import revalidate
                 await revalidate(self.session, raw)
                 invalidated += 1
@@ -630,6 +630,13 @@ class BSCRealtimeIngestionService:
     async def _process_log_unlocked(self, log: ChainLog) -> RawChainEvent | None:
         if self.session is None:
             raise RuntimeError("BSC realtime ingestion requires a database session")
+        if log.removed or log.confirmation_status == "orphaned":
+            # Acquire the publication fence before raw-row writes/savepoints,
+            # matching the collector and reconciler's database lock order.
+            from smms.alpha.work import anchor_blocks
+            await self.session.run_sync(lambda sync: anchor_blocks(
+                sync, {}, observed_at=datetime.now(UTC), authoritative=False,
+            ))
         self._last_process_outcome = {"market_event_type": None, "trade_event": False}
         started = time.perf_counter()
         timestamp = log.timestamp

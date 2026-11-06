@@ -1,6 +1,6 @@
 """Transactional task registration and block-contiguous coverage proofs."""
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -43,35 +43,53 @@ def register_pair(session: Session, pair: Pair) -> None:
         "target_at": t0 + timedelta(seconds=max(SNAPSHOT_WINDOWS)) + TRACKING_HORIZON,
         "next_attempt_at": t0, "status": "PENDING",
     }, ["pair_id"])
-    job = session.scalar(select(AlphaCoverageJob).where(
-        AlphaCoverageJob.pair_id == pair.id, AlphaCoverageJob.status == "INVALIDATED",
-    ).with_for_update(skip_locked=True))
-    resumed = job is not None
-    if resumed:
+    job = session.scalar(select(AlphaCoverageJob).where(AlphaCoverageJob.pair_id == pair.id))
+    if job.next_block is None and pair.creation_block is not None and job.status == "PENDING":
+        job.next_block, job.next_attempt_at = pair.creation_block, t0
+        job.last_error = None
+    if job.status == "INVALIDATED":
+        # Only canonical rediscovery may resume this job. Avoid waiting on a
+        # reconciler while holding another pair's lock during the repair sweep.
+        job = session.scalar(select(AlphaCoverageJob).where(
+            AlphaCoverageJob.pair_id == pair.id, AlphaCoverageJob.status == "INVALIDATED",
+        ).with_for_update(skip_locked=True).execution_options(populate_existing=True))
+        if job is None:
+            return
         job.generation += 1
         job.status, job.next_block = "PENDING", pair.creation_block
         job.target_at = t0 + timedelta(seconds=max(SNAPSHOT_WINDOWS)) + TRACKING_HORIZON
         job.next_attempt_at = t0
         job.lease_token = job.leased_until = job.last_error = None
     for seconds in SNAPSHOT_WINDOWS:
+        latest = session.scalar(select(AlphaSnapshot).where(
+            AlphaSnapshot.chain == "bsc", AlphaSnapshot.token_address == token.lower(),
+            AlphaSnapshot.pair_address == pair.address.lower(), AlphaSnapshot.observation_seconds == seconds,
+            AlphaSnapshot.score_version == SCORE_VERSION,
+        ).order_by(AlphaSnapshot.input_revision.desc(), AlphaSnapshot.id.desc()).limit(1))
+        if latest is not None:
+            same_generation = latest.coverage_generation == job.generation
+            pending = latest.task_status == "PENDING_INPUT" and latest.alpha_score is None
+            verified = (latest.task_status in {"TRACKING", "COMPLETE"}
+                        and (latest.input_manifest or {}).get("schema_version") == "alpha-inputs-v1")
+            if same_generation and (pending or verified):
+                continue
+            if latest.task_status != "INVALIDATED":
+                invalidate_snapshot(latest, reason="SOURCE_GENERATION_OR_MANIFEST_CHANGED", now=datetime.now(UTC))
         at = t0 + timedelta(seconds=seconds)
+        old_outcome = latest.outcome_json or {} if latest is not None else {}
+        pinned = {key: old_outcome[key] for key in ("minimum_quote", "policy_id", "label_version")
+                  if key in old_outcome}
         _insert(session, AlphaSnapshot, {
             "chain": "bsc", "token_address": token.lower(), "pair_address": pair.address.lower(),
             "pair_created_at": t0, "snapshot_at": at, "age_seconds": seconds,
             "observation_seconds": seconds, "alpha_score": None, "score_version": SCORE_VERSION,
             "scored_at": at, "task_status": "PENDING_INPUT", "next_evaluation_at": at,
-            "outcome_json": {**{f"reached_{n}x": None for n in (2, 3, 5, 10)},
+            "input_revision": latest.input_revision + 1 if latest is not None else 0,
+            "supersedes_id": latest.id if latest is not None else None,
+            "coverage_generation": job.generation, "input_manifest": {},
+            "outcome_json": {**pinned, **{f"reached_{n}x": None for n in (2, 3, 5, 10)},
                              "tracking_complete": False},
-        }, ["chain", "token_address", "pair_address", "observation_seconds", "score_version"])
-    if resumed:
-        for row in session.scalars(select(AlphaSnapshot).where(
-            AlphaSnapshot.chain == "bsc", AlphaSnapshot.pair_address == pair.address,
-            AlphaSnapshot.score_version == SCORE_VERSION, AlphaSnapshot.alpha_score.is_(None),
-        )):
-            row.pair_created_at = t0
-            row.snapshot_at = t0 + timedelta(seconds=row.observation_seconds)
-            row.next_evaluation_at, row.task_status = row.snapshot_at, "PENDING_INPUT"
-            row.coverage_generation = None
+        }, ["chain", "token_address", "pair_address", "observation_seconds", "score_version", "input_revision"])
 
 
 def repair_work(session: Session, *, batch_size: int) -> None:
@@ -140,8 +158,9 @@ def invalidate_coverage(session: Session, *, from_block: int, now: datetime) -> 
         Pair.chain_id == 56,
         (AlphaCoverageJob.id.in_(select(AlphaCoverageReceipt.job_id).where(
             AlphaCoverageReceipt.canonical.is_(True), AlphaCoverageReceipt.end_block >= from_block,
-        ))) | (AlphaCoverageJob.lease_token.is_not(None)),
-    ).order_by(AlphaCoverageJob.id).with_for_update()).all()
+        ))) | (AlphaCoverageJob.lease_token.is_not(None))
+        | Pair.canonical.is_(False) | Pair.removed.is_(True) | (Pair.creation_block >= from_block),
+    ).order_by(AlphaCoverageJob.id).with_for_update(of=AlphaCoverageJob)).all()
     for job in jobs:
         pair = session.get(Pair, job.pair_id)
         session.execute(update(AlphaCoverageReceipt).where(
@@ -155,15 +174,35 @@ def invalidate_coverage(session: Session, *, from_block: int, now: datetime) -> 
             AlphaSnapshot.chain == "bsc", AlphaSnapshot.pair_address == pair.address,
             AlphaSnapshot.score_version == SCORE_VERSION,
         )):
-            # Scored history is retained for the separate reconstruction gate R3.
-            if row.alpha_score is not None:
-                row.task_status = "INVALIDATED"
-            else:
-                row.task_status, row.next_evaluation_at = "PENDING_INPUT", now
-            row.outcome_json = {**(row.outcome_json or {}), "coverage_invalidated_at": utc(now).isoformat(),
-                                "tracking_complete": False,
-                                **{f"reached_{n}x": None for n in (2, 3, 5, 10)}}
+            invalidate_snapshot(row, reason="CANONICAL_REORG", now=now)
+        register_pair(session, pair)
     return len(jobs)
+
+
+def invalidate_snapshot(row, *, reason, now):
+    if row.task_status == "INVALIDATED":
+        return
+    previous = dict(row.outcome_json or {})
+    row.task_status, row.next_evaluation_at = "INVALIDATED", None
+    row.outcome_json = {**previous, "invalidated_outcome": previous,
+                        "coverage_invalidated_at": utc(now).isoformat(),
+                        "tracking_complete": False, "invalid_reason": reason,
+                        **{f"reached_{n}x": None for n in (2, 3, 5, 10)}}
+
+
+def invalidate_removed_source(session, *, block_number, block_hash, now, force=False):
+    """Fence unknown replacement hashes until canonical reconciliation supplies one."""
+    if block_number is None:
+        return invalidate_coverage(session, from_block=0, now=now)
+    expected = block_hash.lower()
+    effective, _ = anchor_blocks(session, {block_number: expected}, observed_at=now, authoritative=False)
+    if effective[block_number] != expected and not force:
+        # Already fenced, or canonical reconciliation knows a different fork.
+        # Duplicate notifications without newly changed facts add no evidence.
+        return 0
+    if effective[block_number] == expected:
+        anchor_blocks(session, {block_number: f"orphaned:{expected}"}, observed_at=now, authoritative=True)
+    return invalidate_coverage(session, from_block=block_number, now=now)
 
 
 def anchor_blocks(session: Session, blocks: dict[int, str], *, observed_at: datetime,

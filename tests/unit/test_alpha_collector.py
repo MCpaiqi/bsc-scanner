@@ -265,7 +265,107 @@ async def test_canonical_rediscovery_resumes_unscored_work(coverage_session):
     resumed = await session.run_sync(lambda sync: claim_work(sync, now=NOW, factories={FACTORY}))
     assert resumed is not None and resumed.creation_hash == "replacement-creation"
     rows = (await session.scalars(select(AlphaSnapshot))).all()
-    assert all(r.task_status == "PENDING_INPUT" and r.alpha_score is None for r in rows)
+    pending = [r for r in rows if r.task_status == "PENDING_INPUT"]
+    assert len(pending) == 4 and all(r.alpha_score is None for r in pending)
+    assert len([r for r in rows if r.task_status == "INVALIDATED"]) == 4
+
+
+@pytest.mark.asyncio
+async def test_removed_source_invalidates_and_enqueues_research_before_commit(coverage_session):
+    from smms.alpha.live import process_live_alpha
+    from smms.db.models import AlphaSnapshot
+    from smms.market.pipeline import BSCMarketPipeline
+
+    session = coverage_session
+    item = await claim(session)
+    scan = await fetch_scan(Provider(), item, confirmations=1, chunk_size=10)
+    await persist_scan(session, item, scan, now=NOW + timedelta(seconds=1))
+    await session.run_sync(lambda sync: process_live_alpha(sync, now=NOW + timedelta(seconds=2)))
+    await session.commit()
+    raw = await session.scalar(select(RawChainEvent))
+    await BSCMarketPipeline(session)._invalidate_event(raw)
+    rows = (await session.scalars(select(AlphaSnapshot))).all()
+    assert len([r for r in rows if r.task_status == "INVALIDATED"]) == 4
+    assert len([r for r in rows if r.task_status == "PENDING_INPUT"]) == 4
+    assert not (await session.scalar(select(AlphaCoverageReceipt))).canonical
+    await session.rollback()
+    restored = (await session.scalars(select(AlphaSnapshot))).all()
+    assert len(restored) == 4 and all(r.task_status == "COMPLETE" for r in restored)
+
+
+@pytest.mark.asyncio
+async def test_unprojected_removed_log_invalidates_empty_scan_only_once(coverage_session):
+    from types import SimpleNamespace
+
+    from smms.alpha.live import process_live_alpha
+    from smms.db.models import AlphaSnapshot
+    from smms.market.pipeline import BSCMarketPipeline
+
+    session = coverage_session
+    item = await claim(session)
+    scan = await fetch_scan(Provider(), item, confirmations=1, chunk_size=10)
+    await persist_scan(session, item, scan, now=NOW + timedelta(seconds=1))
+    await session.run_sync(lambda sync: process_live_alpha(sync, now=NOW + timedelta(seconds=2)))
+    await session.commit()
+    raw = SimpleNamespace(block_number=101, block_hash="0xblock101", transaction_hash="unprojected",
+                          log_index=9, raw_payload_json={})
+    pipeline = BSCMarketPipeline(session)
+    await pipeline._invalidate_event(raw)
+    await pipeline._invalidate_event(raw)
+    rows = (await session.scalars(select(AlphaSnapshot))).all()
+    assert len(rows) == 8 and len([r for r in rows if r.task_status == "INVALIDATED"]) == 4
+    assert not (await session.scalar(select(AlphaCoverageReceipt))).canonical
+    job = await session.get(AlphaCoverageJob, item.job_id)
+    assert job.generation == 1
+
+
+@pytest.mark.asyncio
+async def test_replacement_pair_created_resets_work_before_old_removed_notice(coverage_session):
+    from smms.alpha.work import register_pair
+    from smms.db.models import AlphaSnapshot, Pair
+    from smms.market.models import PairRecord
+    from smms.market.pipeline import BSCMarketPipeline
+
+    session = coverage_session
+    p = await session.scalar(select(Pair))
+    await session.run_sync(lambda sync: register_pair(sync, p))
+    await session.commit()
+    await BSCMarketPipeline(session)._persist_pair(PairRecord(
+        chain_id=56, address=p.address, token0=p.token0_address, token1=p.token1_address,
+        factory=p.factory_address, dex=p.dex, quote_token=p.quote_token,
+        creation_tx_hash="replacement", creation_block=105, creation_block_hash="replacement-hash",
+        creation_timestamp=T0 + timedelta(seconds=5),
+    ))
+    job = await session.scalar(select(AlphaCoverageJob))
+    assert job.next_block == 105 and job.generation == 1
+    pending = (await session.scalars(select(AlphaSnapshot).where(AlphaSnapshot.task_status == "PENDING_INPUT"))).all()
+    assert len(pending) == 4 and all(r.input_revision == 1 for r in pending)
+
+
+@pytest.mark.asyncio
+async def test_realtime_removed_log_commits_research_invalidation_with_raw_fact(coverage_session):
+    from types import SimpleNamespace
+
+    from smms.alpha.live import process_live_alpha
+    from smms.config import Settings
+    from smms.db.models import AlphaSnapshot
+    from smms.ingestion.bsc_stream import BSCRealtimeIngestionService
+
+    session = coverage_session
+    item = await claim(session)
+    scan = await fetch_scan(Provider(), item, confirmations=1, chunk_size=10)
+    await persist_scan(session, item, scan, now=NOW + timedelta(seconds=1))
+    await session.run_sync(lambda sync: process_live_alpha(sync, now=NOW + timedelta(seconds=2)))
+    await session.commit()
+    service = BSCRealtimeIngestionService(SimpleNamespace(settings=Settings(_env_file=None)), session=session)
+    raw = await service.process_log(ChainLog(
+        address=PAIR, topics=(), data="0x", block_number=101, block_hash="0xblock101",
+        transaction_hash="new-orphan-evidence", log_index=9, timestamp=NOW, removed=True,
+    ))
+    await session.commit()
+    assert raw is not None and raw.removed and raw.confirmation_status == "orphaned"
+    rows = (await session.scalars(select(AlphaSnapshot))).all()
+    assert len(rows) == 8 and len([r for r in rows if r.task_status == "INVALIDATED"]) == 4
 
 
 @pytest.mark.asyncio

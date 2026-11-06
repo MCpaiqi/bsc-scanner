@@ -36,9 +36,25 @@ def _utc_datetime(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
+def _manifest_summary(manifest):
+    return {key: manifest.get(key) for key in ("schema_version", "digest", "captured_at", "entry_manifest_digest")} | {
+        "trade_count": len(manifest.get("trade_ids", [])), "receipt_count": len(manifest.get("receipts", [])),
+    } if manifest else {}
+
+
+def _outcome_summary(outcome):
+    result = dict(outcome or {})
+    if "evaluation_manifest" in result:
+        result["evaluation_manifest"] = _manifest_summary(result["evaluation_manifest"])
+    if "invalidated_outcome" in result:
+        result["invalidated_outcome"] = _outcome_summary(result["invalidated_outcome"])
+    return result
+
+
 def _alpha_payload(row: AlphaSnapshot, *, now: datetime, metadata: dict | None = None) -> dict[str, object]:
     current_age_seconds = max(0, int((now - _utc_datetime(row.pair_created_at)).total_seconds()))
     return {
+        "snapshot_id": row.id,
         "identity": {"chain": row.chain, "token": row.token_address, "pair": row.pair_address,
                      **dict.fromkeys(("symbol", "name", "image_url", "quote_symbol", "dex", "dex_url")),
                      **(metadata or {})},
@@ -47,6 +63,10 @@ def _alpha_payload(row: AlphaSnapshot, *, now: datetime, metadata: dict | None =
         "current_age_seconds": current_age_seconds,
         "alpha_score": float(row.alpha_score) if row.alpha_score is not None else None,
         "task_status": row.task_status,
+        "input_revision": row.input_revision, "supersedes_id": row.supersedes_id,
+        "input_manifest": _manifest_summary(row.input_manifest),
+        "lineage_url": f"/api/alpha/revisions/{row.id}/lineage",
+        "outcome_validity": "INVALIDATED" if row.task_status == "INVALIDATED" else row.task_status,
         "score_version": row.score_version, "status": "EXPERIMENTAL ALPHA / SHADOW MODE",
         "components": row.components_json, "features": row.features_json,
         "positive_reasons": row.positive_reasons, "negative_reasons": row.negative_reasons,
@@ -58,7 +78,7 @@ def _alpha_payload(row: AlphaSnapshot, *, now: datetime, metadata: dict | None =
                      "current_return": str(row.current_return) if row.current_return is not None else None,
                      "max_tick_return": str(row.max_tick_return) if row.max_tick_return is not None else None,
                      "max_realisable_return": str(row.max_realisable_return) if row.max_realisable_return is not None else None,
-                     **(row.outcome_json or {})},
+                     **_outcome_summary(row.outcome_json)},
     }
 
 
@@ -118,14 +138,15 @@ async def alpha_candidate(token_or_pair: str):
         rows = await session.run_sync(lambda sync: sync.scalars(
             select(AlphaSnapshot)
             .where(AlphaSnapshot.chain == "bsc", AlphaSnapshot.score_version == SCORE_VERSION)
-            .where(AlphaSnapshot.alpha_score.is_not(None), AlphaSnapshot.task_status.in_(("TRACKING", "COMPLETE")))
+            .where(AlphaSnapshot.task_status.in_(("PENDING_INPUT", "TRACKING", "COMPLETE")))
             .where((AlphaSnapshot.token_address == token_or_pair.lower()) | (AlphaSnapshot.pair_address == token_or_pair.lower()))
             .order_by(AlphaSnapshot.observation_seconds)
         ).all())
         metadata = await session.run_sync(lambda sync: load_alpha_metadata(sync, rows))
     if not rows:
         raise HTTPException(404, "alpha candidate not found")
-    latest = max(rows, key=lambda row: row.snapshot_at)
+    scored = [row for row in rows if row.alpha_score is not None]
+    latest = max(scored or rows, key=lambda row: row.snapshot_at)
     return {
         "latest": _alpha_payload(latest, now=now, metadata=metadata.get((latest.token_address, latest.pair_address))),
         "snapshots": [_alpha_payload(row, now=now, metadata=metadata.get((row.token_address, row.pair_address))) for row in rows],
@@ -139,6 +160,45 @@ async def alpha_stats():
         return await session.run_sync(lambda sync: alpha_statistics(
             sync, now=datetime.now(UTC), minimum_quote=Decimal(str(settings.alpha_min_future_quote_notional)),
         ))
+
+
+@alpha_router.get("/candidates/{token_or_pair}/revisions")
+async def alpha_revisions(token_or_pair: str, limit: int = Query(50, ge=1, le=200),
+                          before_id: int | None = Query(None, ge=1)):
+    settings = get_settings()
+    now = datetime.now(UTC)
+    async with session_scope(settings) as session:
+        rows, cursor = await session.run_sync(lambda sync: alpha_revision_history(
+            sync, token_or_pair, limit=limit, before_id=before_id,
+        ))
+    return {"audit_only": True, "revisions": [_alpha_payload(row, now=now) for row in rows],
+            "next_cursor": cursor}
+
+
+def alpha_revision_history(sync, identity, *, limit=50, before_id=None):
+    if not 1 <= limit <= 200 or (before_id is not None and before_id < 1):
+        raise ValueError("invalid revision history page")
+    query = select(AlphaSnapshot).where(
+        AlphaSnapshot.chain == "bsc",
+        (AlphaSnapshot.token_address == identity.lower()) | (AlphaSnapshot.pair_address == identity.lower()),
+    )
+    if before_id is not None:
+        query = query.where(AlphaSnapshot.id < before_id)
+    rows = sync.scalars(query.order_by(AlphaSnapshot.id.desc()).limit(limit + 1)).all()
+    return rows[:limit], rows[limit - 1].id if len(rows) > limit else None
+
+
+@alpha_router.get("/revisions/{snapshot_id}/lineage")
+async def alpha_lineage(snapshot_id: int):
+    async with session_scope(get_settings()) as session:
+        row = await session.get(AlphaSnapshot, snapshot_id)
+    if row is None or row.chain != "bsc":
+        raise HTTPException(404, "alpha revision not found")
+    return {"audit_only": True, "snapshot_id": row.id, "input_revision": row.input_revision,
+            "supersedes_id": row.supersedes_id, "task_status": row.task_status,
+            "input_manifest": row.input_manifest,
+            "evaluation_manifest": (row.outcome_json or {}).get("evaluation_manifest"),
+            "invalidated_outcome": (row.outcome_json or {}).get("invalidated_outcome")}
 
 
 def alpha_statistics(sync, *, now, minimum_quote):
@@ -167,6 +227,9 @@ def alpha_statistics(sync, *, now, minimum_quote):
             "scored_tokens": count(*scored, tokens=True),
             "high_score_tokens": count(*scored, AlphaSnapshot.alpha_score >= HIGH_SCORE, tokens=True),
             "pending_snapshots": count(*current, AlphaSnapshot.task_status.in_(("PENDING_INPUT", "TRACKING"))),
+            "rebuilding_snapshots": count(*current, AlphaSnapshot.task_status == "PENDING_INPUT",
+                                           AlphaSnapshot.supersedes_id.is_not(None)),
+            "invalidated_snapshots": count(*current, AlphaSnapshot.task_status == "INVALIDATED"),
             "matured_1h": count(*cohort), "overall": rates(), "high_score": rates(True)}
 
 

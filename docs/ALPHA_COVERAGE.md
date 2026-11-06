@@ -2,7 +2,7 @@
 
 The live recipe is `experimental-v3`, with labels `alpha-shadow-v2`. Earlier
 scores and labels remain stored under their original versions. Run Alembic
-through `20261106_0036` before starting the updated application or workers.
+through `20261106_0037` before starting the updated application or workers.
 
 `alpha-coverage` is an independent Compose worker. It scans each admitted
 PancakeSwap pair from its creation block through the first 65 minutes using
@@ -50,8 +50,9 @@ pressure; missing concentration supplies zero. Risk remains UNKNOWN and an
 observed rapid-fire penalty remains explicit. The high-score threshold is 70.
 
 Reorg reconciliation invalidates affected receipts and clears trusted labels;
-scored historical inputs are retained as INVALIDATED. Automatic reconstruction
-of these scored inputs is the separate R3 acceptance gate. Deferred market
+scored historical inputs are retained as INVALIDATED and corrected Alpha revisions
+are enqueued automatically; see [reconstruction and lineage](ALPHA_RECONSTRUCTION.md).
+Other derived snapshot reconstruction remains part of the open R3 gate. Deferred market
 projection parity/outbox, dense-path VWAP performance, full Compose restart and
 real-provider archive availability remain separate open programme requirements.
 Canonical anchor retention and publication-lock latency also remain part of R11.

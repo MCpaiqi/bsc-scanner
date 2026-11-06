@@ -192,3 +192,39 @@ separate gate; schema creation inside regressions does not prove migration parit
   and R14 full-topology restart/live limitations remain required goal work.
 - Details: [ALPHA_COVERAGE.md](ALPHA_COVERAGE.md). Apply migration 0036 before
   the updated API/ingestion/Forward/coverage workers are started.
+
+
+### Alpha reconstruction slice, 2026-11-06
+
+- Advanced R3 without closing it: Alpha now appends input revisions linked to
+  predecessors. Old score/features/entry inputs and invalidated outcomes remain
+  auditable; new pending work waits for its canonical coverage generation.
+- Exact input manifests identify pair creation, trades/forks/amounts/units, receipt
+  bounds, policies and semantic versions. Future evaluation has a separate manifest
+  linked to the entry digest. 38-digit source values are preserved without Decimal
+  context rounding; stable digests reproduce after database reload.
+- Current/history API payloads contain source summaries, and a dedicated lineage
+  endpoint exposes full facts on demand. Cursor history includes invalidated/legacy
+  audit rows; current stats continue excluding them. Detail can show a NULL-score
+  replacement as rebuilding. The drawer shows the revision and source link.
+- Real-time removed evidence, including no local projection, fences publication and
+  invalidates proof/research transactionally. Never-scanned PairCreated orphans,
+  replacement creation before old removed notification, duplicate notices and later
+  creation-block enrichment have explicit recovery regressions.
+- Migration 0037 preserves old values, invalidates pre-manifest v3 scores and old
+  receipt generations, and enqueues fresh confirmed rescans at runtime. The old
+  removed-log path could leave stale receipts canonical; reusing their status
+  without rescanning was rejected. No migration provider calls are made.
+- One fresh reviewer identified two P1 lifecycle omissions; both were reproduced
+  RED and fixed in one pass. Full backend **538 passed, 9 skipped, 13 existing
+  warnings**; isolated PostgreSQL **56 passed**; web **42 passed**, TypeScript/build,
+  full Ruff, whitespace, Compose config and Alembic 0037 head passed. Owned test
+  schemas/container/anonymous volume were cleaned after ownership checks.
+- R3 still requires market/risk/wallet-token intelligence, early-buyer/radar derived
+  snapshots, Forward entry lineage and exported dataset/backtest staleness plus
+  reconstruction. These are not proven by Alpha tests. R6–R14 remain open as above.
+- Full provenance source loading/retention and canonical-publication lock latency
+  remain R11 performance work. Clean-checkout/frontend source closure remains R12;
+  only the necessary existing type file was deliberately captured this batch.
+- Details: [ALPHA_RECONSTRUCTION.md](ALPHA_RECONSTRUCTION.md). No real RPC,
+  production data rewrite, deploy, merge or push occurred.

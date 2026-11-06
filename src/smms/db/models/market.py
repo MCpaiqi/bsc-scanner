@@ -4,7 +4,16 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, DateTime, Index, Numeric, String, UniqueConstraint
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    DateTime,
+    ForeignKey,
+    Index,
+    Numeric,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, utc_now
@@ -64,7 +73,7 @@ class AlphaSnapshot(Base):
 
     __tablename__ = "alpha_snapshots"
     __table_args__ = (
-        UniqueConstraint("chain", "token_address", "pair_address", "observation_seconds", "score_version", name="uq_alpha_snapshot_window"),
+        UniqueConstraint("chain", "token_address", "pair_address", "observation_seconds", "score_version", "input_revision", name="uq_alpha_snapshot_window_revision"),
         Index("ix_alpha_snapshot_live", "chain", "snapshot_at", "alpha_score"),
         Index("ix_alpha_snapshot_tracking", "score_version", "snapshot_at"),
         Index("ix_alpha_snapshot_due", "score_version", "task_status", "next_evaluation_at", "id"),
@@ -83,6 +92,9 @@ class AlphaSnapshot(Base):
     task_status: Mapped[str] = mapped_column(String(32), nullable=False, default="LEGACY", server_default="LEGACY")
     next_evaluation_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     coverage_generation: Mapped[int | None] = mapped_column()
+    input_revision: Mapped[int] = mapped_column(default=0, server_default="0", nullable=False)
+    supersedes_id: Mapped[int | None] = mapped_column(ForeignKey("alpha_snapshots.id"))
+    input_manifest: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, server_default="{}", nullable=False)
     scored_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     features_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     components_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)

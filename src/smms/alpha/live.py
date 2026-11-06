@@ -19,9 +19,11 @@ from smms.alpha.baseline import (
     rolling_vwap,
     swap_amounts_for_basis,
 )
-from smms.db.models import AlphaSnapshot, Pair, TradeEvent
+from smms.db.facts import canonical_fact_conditions
+from smms.db.models import AlphaCoverageJob, AlphaSnapshot, Pair, TradeEvent
 from smms.observability import metrics
 
+from .lineage import input_manifest
 from .policy import LABEL_VERSION, SCORE_VERSION, TRACKING_HORIZON, policy_id
 from .work import coverage_proof, repair_work
 
@@ -178,6 +180,12 @@ def process_live_alpha(session: Session, *, now: datetime, minimum_quote: Decima
             outcome.update(tracking_complete=False, input_status="NONCANONICAL_PAIR")
             row.outcome_json = outcome
             continue
+        job = session.scalar(select(AlphaCoverageJob).where(AlphaCoverageJob.pair_id == pair.id))
+        if job is None or row.coverage_generation != job.generation:
+            row.task_status, row.next_evaluation_at = "INVALIDATED", None
+            outcome.update(tracking_complete=False, input_status="STALE_GENERATION")
+            row.outcome_json = outcome
+            continue
         entry_proof = coverage_proof(session, pair, start=row.pair_created_at,
                                      end=row.snapshot_at, as_of=now)
         outcome["entry_coverage"] = entry_proof
@@ -216,6 +224,11 @@ def process_live_alpha(session: Session, *, now: datetime, minimum_quote: Decima
             row.positive_reasons, row.negative_reasons = scoring["positive_reasons"], scoring["negative_reasons"]
             row.warnings = scoring["warnings"]
             row.entry_vwap = entry
+            row.input_manifest = input_manifest(
+                session, pair=pair, trades=events, proof=entry_proof,
+                start=row.pair_created_at, end=row.snapshot_at, now=now,
+                minimum_quote=notional, basis=basis, entry=entry,
+            )
             outcome.update(price_basis=basis, entry_vwap_exact=str(entry), input_status="VERIFIED")
             row.task_status = "TRACKING"
             scored += 1
@@ -231,7 +244,7 @@ def _trades(session, row, *, start, end):
     return session.scalars(select(TradeEvent).where(
         TradeEvent.chain == "bsc", TradeEvent.pair_address == row.pair_address,
         TradeEvent.token_address == row.token_address, TradeEvent.timestamp >= start,
-        TradeEvent.timestamp <= end, TradeEvent.canonical.is_(True), TradeEvent.removed.is_(False),
+        TradeEvent.timestamp <= end, *canonical_fact_conditions(TradeEvent),
     ).order_by(TradeEvent.timestamp, TradeEvent.id)).all()
 
 
@@ -259,6 +272,11 @@ def _evaluate_outcome(session, row, pair, outcome, *, now, minimum_quote):
                                    min_quote_notional=minimum_quote, pair=pair, price_basis=basis)
     row.max_realisable_return = realisable / entry - 1 if realisable is not None else None
     outcome.update(future_coverage=proof, tracking_complete=complete,
+                   evaluation_manifest=input_manifest(
+                       session, pair=pair, trades=events, proof=proof, start=row.snapshot_at,
+                       end=end, now=now, minimum_quote=minimum_quote, basis=basis,
+                       entry=entry, entry_digest=row.input_manifest["digest"],
+                   ),
                    **{f"reached_{n}x": True if row.max_realisable_return is not None
                       and row.max_realisable_return >= n - 1 else (False if complete else None)
                       for n in (2, 3, 5, 10)})

@@ -27,5 +27,6 @@ Forward 从 `forward-v2` 起使用有来源的美元价格、有限取价容差�
 实时 Alpha 从 `experimental-v3` 起使用持久化扫描回执证明覆盖，缺证据保持
 UNKNOWN，未完成任务在停机后继续重试。命中率只统计同一执行口径下完整覆盖的
 1 分钟样本，见 [Alpha 覆盖与恢复](ALPHA_COVERAGE.md)。Forward 的观测价格路径
-不能替代完整区块覆盖证明。旧派生数据的完整失效/重建仍属于
+不能替代完整区块覆盖证明。Alpha 已增加保留历史的
+[自动修订与来源查询](ALPHA_RECONSTRUCTION.md)。其他旧派生数据的完整失效/重建仍属于
 [验收清单](RESEARCH_RELIABILITY.md) 中未完成的 R3。

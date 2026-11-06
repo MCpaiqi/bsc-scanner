@@ -16,6 +16,14 @@ it("distinguishes verified coverage from a pending horizon", () => {
   const complete = renderToStaticMarkup(<AlphaDetail selected={covered} detail={null} onClose={() => {}} />);
   expect(complete).toContain("完整覆盖已验证");
 });
+it("shows an unscored replacement revision with a source link", () => {
+  const rebuilding = { ...latest, alpha_score: null, input_revision: 1, snapshot_id: 7, task_status: "PENDING_INPUT", outcome: {} };
+  host.innerHTML = renderToStaticMarkup(<AlphaDetail selected={latest} detail={{ latest: rebuilding, snapshots: [rebuilding] }} onClose={() => {}} />);
+  expect(host.textContent).toContain("重建中");
+  expect(host.textContent).toContain("研究修订 1");
+  expect(host.querySelector(".score-badge")?.textContent).toBe("—");
+  expect(host.querySelector('a[href="/api/alpha/revisions/7/lineage"]')).not.toBeNull();
+});
 let host: HTMLDivElement; let root: Root;
 beforeEach(() => { Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true }); host = document.createElement("div"); document.body.append(host); root = createRoot(host); });
 afterEach(async () => { await act(() => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.useRealTimers(); });
