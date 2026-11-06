@@ -24,7 +24,6 @@ from sqlalchemy.orm import Session
 from smms.chains.constants import BSC_CHAIN_ID, validate_bsc_chain
 from smms.db.facts import canonical_fact_conditions
 from smms.db.models import (
-    EarlyBuyer,
     MarketEvent,
     Pair,
     Token,
@@ -34,6 +33,7 @@ from smms.db.models import (
     TokenSmartMoneySnapshot,
     TradeEvent,
 )
+from smms.smart_money.replay import load_replay_inputs
 
 HORIZONS = (
     ("30s", timedelta(seconds=30)),
@@ -141,7 +141,7 @@ class HistoricalDatasetBuilder:
         session: Session,
         *,
         chain: str = "bsc",
-        model_version: str = "dataset-v3",
+        model_version: str = "dataset-v4",
         score_version: str = "v2",
         risk_version: str = "risk-v1",
         chain_id: int = BSC_CHAIN_ID,
@@ -311,17 +311,7 @@ class HistoricalDatasetBuilder:
                 .order_by(TokenRiskSnapshot.as_of)
             ).all()
         )
-        early = list(
-            self.session.scalars(
-                select(EarlyBuyer)
-                .where(
-                    EarlyBuyer.chain == self.chain,
-                    EarlyBuyer.token_address == address,
-                    EarlyBuyer.first_buy_timestamp <= end,
-                )
-                .order_by(EarlyBuyer.first_buy_timestamp)
-            ).all()
-        )
+        early = load_replay_inputs(self.session, address, as_of=end, chain=self.chain)
         timeline = self._timelines[token.id]
         discovery = timeline[0][0]
         facts = sorted(
@@ -363,7 +353,7 @@ class HistoricalDatasetBuilder:
             )
             sm = next((s for s in reversed(snaps) if _utc(s.as_of) <= ts), None)
             risk = next((r for r in reversed(risks) if _utc(r.as_of) <= ts), None)
-            buyers = [b for b in early if _utc(b.first_buy_timestamp) <= ts]
+            buyers = early.buyers(as_of=ts)
             smart = (
                 {
                     "score": sm.smart_money_score,
@@ -421,8 +411,9 @@ class HistoricalDatasetBuilder:
                     "count": len(buyers),
                     "quality": "OBSERVED" if buyers else "UNKNOWN",
                     "as_of": ts,
+                    "input_manifest": early.input_manifest(as_of=ts),
                     "items": [
-                        {"first_buy_time": b.first_buy_timestamp, "wallet": b.wallet_address}
+                        {"first_buy_time": b.first_buy_time, "wallet": b.wallet_address}
                         for b in buyers
                     ],
                 },

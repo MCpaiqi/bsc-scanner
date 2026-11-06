@@ -1,7 +1,7 @@
 # Canonical derived research revisions
 
-Apply migrations through `20261106_0038` before starting updated services. This
-batch covers market, risk, wallet intelligence and token intelligence snapshots;
+Apply migrations through `20261106_0039` before starting updated services. This
+covers market, risk, wallet/token intelligence, early-buyer and position snapshots;
 existing values remain stored as history. R3 still has the scope listed below.
 
 ## Visibility and history
@@ -69,11 +69,54 @@ reconstructs them. Primary DexScreener observations remain available. Migration
 and reconstruction make no provider calls. Lossy downgrade is refused after
 revisions, invalidations or rebuild work exist.
 
+## Early buyers and positions
+
+Historical dataset recipe `dataset-v4`, Radar features/signals and the early-buyer
+API replay the same canonical facts at a specified cutoff. Cached EarlyBuyer rows
+cannot supply historical evidence. The adapter requires canonical Pair creation
+at/before cutoff, applies flags/JSON/parent-pair guards, merges trade/market-only
+observations by tx/log (trade projection wins), and excludes future events from
+both calculation and its manifest. A fork changing during the read requires retry.
+
+USD accounting uses TradeEvent.price_usd, explicit USD metadata or USD value /
+normalized token amount. Raw MarketEvent amounts are normalized only from captured
+event token_decimals; absent decimals leave quantity/position unknown. Current
+Token cache decimals cannot supply historical unit evidence. A generic pool quote
+is not a USD price. Missing quantities/costs remain unknown. Sales
+reduce known inventory even when their USD proceeds are missing; FIFO follows
+chain log order and uses a deque. Positions cover every observed trading wallet,
+including wallets outside the configured early-buyer window.
+
+Radar features/signals use an entry-only path: first 24 hours of BUY evidence,
+at most 512 rows plus a sentinel from each source. This avoids loading lifetime
+positions on each event. Saturated first-20 membership is known; an unsaturated
+count with truncated evidence stays UNKNOWN with EARLY_ENTRY_SOURCE_LIMIT. Source
+projection priority also applies when a Trade side corrects a Market side. Full
+API/dataset/position replay still needs R11 dense-history streaming/retention work.
+
+Source queries refresh retained ORM values before recording a current epoch;
+independent writer corrections cannot be certified using old identity-map values.
+
+Buyer/position snapshots preserve as_of, recipe/configuration hash, epoch and
+immutable revisions. Losing the last canonical input publishes an UNAVAILABLE
+audit revision; ordinary reads cannot return the old wallet. Existing audit and
+durable research-rebuild endpoints/worker support both tables. Dictionary replay
+imports stay unverified at epoch zero; trusted production reconstruction reads
+stored canonical facts using `EarlyBuyerEngine.refresh`.
+
+0039 preserves old cache payloads at epoch zero. Since old caches lack build times,
+the reconstruction cutoff is explicitly first_buy_timestamp for buyers and
+last_trade_timestamp for positions (1970 if absent), with legacy-defaults-v1
+policy recorded. This does not recover the old cache's unknown build cutoff.
+Old materialized datasets remain immutable artifacts; new canonical buyer
+extraction has a distinct dataset-v4 config hash. They still require the artifact
+staleness/rebuild work below.
+
 ## Remaining programme work
 
-R3 still covers EarlyBuyer/positions, radar cached features/signals, Evidence
+R3 still covers radar cached features/signals, Evidence
 Resolver dependencies, Forward entry observations and materialized datasets/
-backtests. These artifacts are not validated by association with the four tables.
+backtests. These artifacts are not validated by association with these snapshots.
 Supported source mutation must use canonical invalidation; raw SQL audit access
 is separate from trusted current APIs.
 

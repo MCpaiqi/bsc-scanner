@@ -3,11 +3,13 @@
 from sqlalchemy import select
 
 from smms.db.models import (
+    EarlyBuyer,
     ResearchSnapshotLock,
     TokenMarketSnapshot,
     TokenRiskSnapshot,
     TokenSmartMoneySnapshot,
     WalletSmartMoneySnapshot,
+    WalletTokenPosition,
 )
 
 from .lineage import digest, manifest, row_values
@@ -18,6 +20,8 @@ IDENTITY = {
     TokenRiskSnapshot: ("chain", "token_address", "as_of", "risk_version"),
     TokenSmartMoneySnapshot: ("chain", "token_address", "as_of", "score_version"),
     WalletSmartMoneySnapshot: ("chain", "wallet_address", "as_of", "score_version", "profile_version"),
+    EarlyBuyer: ("chain", "wallet_address", "token_address", "as_of", "recipe_hash"),
+    WalletTokenPosition: ("chain", "wallet_address", "token_address", "as_of", "recipe_hash"),
 }
 MODELS = {model.__tablename__: model for model in IDENTITY}
 

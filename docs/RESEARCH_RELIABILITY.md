@@ -270,3 +270,47 @@ separate gate; schema creation inside regressions does not prove migration parit
   dense history/manifests and full health/dashboard/latency acceptance remain R11/R14.
 - Details: [DERIVED_RESEARCH.md](DERIVED_RESEARCH.md). Updated services require
   migration `20261106_0038` before starting.
+
+### Early-buyer and position reconstruction slice, 2026-11-06
+
+- Continued R3 with canonical early-buyer replay for dataset-v4, Radar feature/
+  signal membership and the public API. Old buyer caches cannot supply historical
+  evidence. Canonical observed Pair creation, parent/flag/JSON validity, tx/log
+  deduplication and original time cutoffs apply to both results and manifests.
+- EarlyBuyer/WalletTokenPosition now use the shared immutable epoch/revision/
+  predecessor/manifest/publication and durable rebuild contract. Removing the last
+  input withdraws a wallet through an UNAVAILABLE audit version. Positions cover
+  every observed trading wallet, including those outside the early-entry window.
+- Migration 0039 preserves and quarantines old cache payloads; the explicit legacy
+  reconstruction cutoff is first buy / last trade (1970 when unknown), with
+  legacy-defaults-v1 parameters. Unknown quantities are nullable. Downgrade refuses
+  revisions, unknown quantities or outstanding reconstruction work.
+- Accounting excludes generic quote prices, honors explicit Trade.price_usd and
+  uses captured event decimals to normalize raw Market amounts. Missing historical
+  unit evidence stays UNKNOWN. Missing USD proceeds still consume inventory;
+  missing quantities/costs cannot become zero positions or zero-cost profit. FIFO
+  and first-N buyer ranking follow chain log order, with a deque for lot removal.
+- One fresh read-only reviewer reproduced four material issues. All received RED
+  regressions and were fixed in one pass: old identity-map values certified under
+  a new epoch, raw/normalized amount mixing, ignored USD column and address-based
+  buyer truncation. Source queries now refresh ORM values; concurrent epoch changes
+  require a complete read retry. No second review cycle was requested.
+- Ruling on review exclusions: cached Radar/Signal/Evidence, Forward entries and
+  materialized dataset/backtest artifacts remain pending R3; full topology and
+  real providers remain R14. The hot-path lifetime scan concern was addressed
+  locally with bounded entry-only reads (512 + sentinel per source, first-day BUY
+  evidence). Unsaturated truncated samples remain UNKNOWN; full-history streaming,
+  retention, async reconstruction throughput and latency remain R11.
+- Existing materialized artifacts are preserved; new extraction has dataset-v4
+  identity. This slice does not certify or rebuild old exports. R3 and R6–R14
+  remain OPEN under the original objective; no production rewrite/deploy/push.
+- Verification after the fix pass: backend **589 passed, 16 skipped, 13 existing
+  warnings**; isolated database command **61 passed**, comprising **59 actual
+  PostgreSQL cases**, one async SQLite API case and one heartbeat simulation.
+  Final downgrade-guard migration checks **3 passed** (one PostgreSQL migration,
+  two SQLite migration paths). Web **42 passed**, typecheck/build passed; Ruff,
+  whitespace, Compose configuration, Alembic 0039 head and full offline SQL
+  generation (**1222 lines**) passed.
+- Verified zero remaining owned schemas, then removed the purpose-labelled test
+  PostgreSQL container/anonymous volume. Temporary SQL was removed. Existing
+  untracked product/data/release files remain preserved and outside this commit.

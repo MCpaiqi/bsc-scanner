@@ -228,16 +228,20 @@ class TradeEvent(Base):
         return normalize_address(value, chain=getattr(self, "chain", None) or ("bsc" if str(value).lower().startswith("0x") else None))
 
 
-class EarlyBuyer(Base):
+class EarlyBuyer(SnapshotLineageMixin, Base):
     """The first qualifying buy for a wallet/token, recomputed from trades."""
 
     __tablename__ = "early_buyers"
     __table_args__ = (
-        UniqueConstraint("chain", "wallet_address", "token_address", name="uq_early_buyers_wallet_token"),
+        UniqueConstraint("chain", "wallet_address", "token_address", "as_of", "recipe_hash", "research_revision",
+                         name="uq_early_buyers_wallet_token"),
         Index("ix_early_buyers_token_rank", "token_address", "buy_rank"),
+        Index("ix_early_buyers_rebuild", "chain", "source_epoch", "snapshot_status", "id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    recipe_hash: Mapped[str] = mapped_column(String(64), default="legacy", server_default="legacy", nullable=False)
     chain: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     wallet_address: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     token_address: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
@@ -258,22 +262,26 @@ class EarlyBuyer(Base):
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
 
-class WalletTokenPosition(Base):
+class WalletTokenPosition(SnapshotLineageMixin, Base):
     """Current wallet/token accounting snapshot derived from the full trade stream."""
 
     __tablename__ = "wallet_token_positions"
     __table_args__ = (
-        UniqueConstraint("chain", "wallet_address", "token_address", name="uq_wallet_token_positions_pair"),
+        UniqueConstraint("chain", "wallet_address", "token_address", "as_of", "recipe_hash", "research_revision",
+                         name="uq_wallet_token_positions_pair"),
         Index("ix_wallet_token_positions_token", "token_address"),
+        Index("ix_wallet_token_positions_rebuild", "chain", "source_epoch", "snapshot_status", "id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    recipe_hash: Mapped[str] = mapped_column(String(64), default="legacy", server_default="legacy", nullable=False)
     chain: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     wallet_address: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     token_address: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    cumulative_bought: Mapped[Decimal] = mapped_column(Decimal18, default=0, nullable=False)
-    cumulative_sold: Mapped[Decimal] = mapped_column(Decimal18, default=0, nullable=False)
-    current_balance: Mapped[Decimal] = mapped_column(Decimal18, default=0, nullable=False)
+    cumulative_bought: Mapped[Decimal | None] = mapped_column(Decimal18)
+    cumulative_sold: Mapped[Decimal | None] = mapped_column(Decimal18)
+    current_balance: Mapped[Decimal | None] = mapped_column(Decimal18)
     total_invested: Mapped[Decimal | None] = mapped_column(Decimal18)
     total_returned: Mapped[Decimal | None] = mapped_column(Decimal18)
     realized_pnl: Mapped[Decimal | None] = mapped_column(Decimal18)

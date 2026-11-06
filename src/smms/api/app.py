@@ -30,7 +30,6 @@ from smms.db.models import (
     BacktestDataset,
     BacktestDatasetRow,
     MarketEvent,
-    Pair,
     RuntimeWorkerStatus,
     StreamCheckpoint,
     Token,
@@ -53,11 +52,11 @@ from smms.smart_money import (
     build_wallet_knowledge_graph,
     calculate_smart_money_alpha,
     detect_wallet_clusters,
-    identify_early_buyers,
     replay_historical_smart_money,
     smart_money_flow,
 )
 from smms.smart_money.aggregation import SCORE_VERSION
+from smms.smart_money.replay import StaleReplayInputs, load_replay_inputs
 
 STATIC_DIR = Path(__file__).with_name("static")
 _WEB_DIST_CANDIDATES = (
@@ -699,6 +698,7 @@ async def token_early_buyers(
     limit: int = Query(20, ge=1, le=200),
     sort: str = Query("rank"),
     time_window: str | None = Query(None, description="buyers:20, blocks:50, or minutes:5"),
+    as_of: datetime | None = Query(None),  # noqa: B008
 ) -> dict[str, object]:
     """Return deterministic early buyers and their observed positions/PnL."""
     settings = get_settings()
@@ -717,105 +717,36 @@ async def token_early_buyers(
                 detail="time_window 必须是 buyers:N、blocks:N 或 minutes:N",
             )
         window_type, window_value = parts[0], int(parts[1])
+    cutoff = _cutoff(as_of or datetime.now(UTC))
+    if cutoff > datetime.now(UTC):
+        raise HTTPException(400, "as_of cannot be in the future")
     async with session_scope(settings) as session:
-        token_row = await session.scalar(
-            select(Token).where(Token.address == token, Token.chain == "bsc")
-        )
-        pair_row = None
-        if token_row is not None:
-            pair_row = await session.scalar(
-                select(Pair)
-                .where(
-                    Pair.chain_id == settings.bsc_chain_id,
-                    (Pair.token0_address == token or Pair.token1_address == token),
-                    Pair.creation_timestamp.is_not(None),
-                )
-                .order_by(Pair.creation_timestamp.asc(), Pair.id.asc())
-                .limit(1)
-            )
-        if token_row is None or pair_row is None or pair_row.creation_timestamp is None:
-            return {
-                "token": token,
-                "early_buyers": [],
-                "data_status": "UNKNOWN_TOKEN_CREATION",
-                **_freshness_fields(None, None),
-            }
-        query = select(TradeEvent).where(
-            TradeEvent.chain == "bsc", TradeEvent.token_address == token
-        )
-        trade_rows = list(
-            (await session.scalars(query.order_by(TradeEvent.timestamp, TradeEvent.id))).all()
-        )
-        if trade_rows:
-            transactions = [
-                {
-                    "wallet_address": row.trader_address,
-                    "signature": row.tx_hash,
-                    "event_index": row.event_index,
-                    "timestamp": row.timestamp,
-                    "side": row.side.value if hasattr(row.side, "value") else row.side,
-                    "token_address": row.token_address,
-                    "token_amount": row.token_amount,
-                    "usd_value": None,
-                    "price": row.price,
-                    "market_cap": row.market_cap,
-                    "block_number": row.block_number,
-                    "metadata_json": row.metadata_json,
-                }
-                for row in trade_rows
-            ]
-        else:
-            market_query = select(MarketEvent).where(
-                MarketEvent.chain_id == settings.bsc_chain_id, MarketEvent.token_address == token
-            )
-            rows = list(
-                (
-                    await session.scalars(
-                        market_query.order_by(MarketEvent.timestamp, MarketEvent.id)
-                    )
-                ).all()
-            )
-            transactions = [
-                {
-                    "wallet_address": row.wallet_address,
-                    "signature": row.tx_hash,
-                    "event_index": row.event_index,
-                    "timestamp": row.timestamp,
-                    "side": row.side,
-                    "token_address": row.token_address,
-                    "token_amount": row.token_amount,
-                    "usd_value": row.usd_value,
-                    "price": row.price,
-                    "market_cap": row.metadata_json.get("market_cap"),
-                    "block_number": row.block_number,
-                    "metadata_json": row.metadata_json,
-                }
-                for row in rows
-            ]
-    buyers = identify_early_buyers(
-        token,
-        transactions,
-        token_created_at=pair_row.creation_timestamp,
-        token_created_block=pair_row.creation_block,
-        config=EarlyBuyerConfig(
-            top_n=limit,
-            max_entry_hours=settings.early_buyer_max_entry_hours,
-            window_type=window_type,
-            window_value=window_value,
-        ),
+        try:
+            inputs = await session.run_sync(lambda sync: load_replay_inputs(sync, token, as_of=cutoff))
+        except StaleReplayInputs as exc:
+            raise HTTPException(503, "canonical inputs changed; retry the early-buyer read") from exc
+    if inputs.pair is None:
+        return {"token": token, "early_buyers": [], "data_status": "UNKNOWN_TOKEN_CREATION",
+                **_freshness_fields(None, None)}
+    config = EarlyBuyerConfig(
+        top_n=limit, max_entry_hours=settings.early_buyer_max_entry_hours,
+        window_type=window_type, window_value=window_value,
     )
+    buyers = inputs.buyers(config=config)
     if sort == "entry_usd":
         buyers.sort(key=lambda b: b.first_buy_usd or 0, reverse=True)
     elif sort == "pnl":
         buyers.sort(key=lambda b: b.realized_pnl or 0, reverse=True)
     observed_at = max(
-        (_cutoff(row["timestamp"]) for row in transactions),
-        default=_cutoff(pair_row.creation_timestamp),
+        (_cutoff(row["timestamp"]) for row in inputs.transactions),
+        default=datetime.fromisoformat(inputs.pair["creation_timestamp"]),
     )
     return {
         "token": token,
         "window": {"type": window_type, "value": window_value or limit},
-        "data_status": "CHAIN_EVENTS",
+        "data_status": "CHAIN_EVENTS" if buyers else "NO_CANONICAL_EARLY_BUYERS",
+        "replay": {"as_of": cutoff.isoformat(), "source_epoch": inputs.source_epoch,
+                   "digest": inputs.input_manifest(config=config)["digest"]},
         **_freshness_fields(observed_at, observed_at),
         "early_buyers": [
             {

@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
 from smms.db.models import (
+    EarlyBuyer,
     ResearchRebuildCursor,
     ResearchRebuildJob,
     ResearchState,
@@ -15,6 +16,7 @@ from smms.db.models import (
     TokenRiskSnapshot,
     TokenSmartMoneySnapshot,
     WalletSmartMoneySnapshot,
+    WalletTokenPosition,
 )
 from smms.evaluation import utc
 
@@ -45,7 +47,20 @@ def _repair(session, *, epoch, now, batch_size):
 
 def _rebuild(session, old):
     parameters = (old.input_manifest or {}).get("parameters", {})
-    if isinstance(old, (TokenSmartMoneySnapshot, WalletSmartMoneySnapshot)):
+    if isinstance(old, (EarlyBuyer, WalletTokenPosition)):
+        from smms.smart_money.early_buyers import EarlyBuyerConfig
+        from smms.smart_money.engine import EarlyBuyerEngine
+        from smms.smart_money.replay import REPLAY_VERSION
+
+        if parameters.get("recipe", REPLAY_VERSION) != REPLAY_VERSION:
+            return "UNSUPPORTED_VERSION"
+        config = parameters.get("config") or ({"window_type": old.window_type, "window_value": old.window_value}
+                                               if isinstance(old, EarlyBuyer) else {})
+        EarlyBuyerEngine(session, chain=old.chain).refresh(
+            old.token_address, as_of=old.as_of, config=EarlyBuyerConfig(**config), recipe_hash=old.recipe_hash,
+            reconstruction_policy=parameters.get("reconstruction_policy", "legacy-defaults-v1" if not parameters else None),
+        )
+    elif isinstance(old, (TokenSmartMoneySnapshot, WalletSmartMoneySnapshot)):
         from smms.smart_money.aggregation import (
             PROFILE_VERSION,
             SCORE_VERSION,

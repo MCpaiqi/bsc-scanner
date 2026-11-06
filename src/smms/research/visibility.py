@@ -5,20 +5,24 @@ from sqlalchemy.orm import with_loader_criteria
 
 from smms.db.facts import canonical_fact_conditions
 from smms.db.models import (
+    EarlyBuyer,
     ResearchState,
     TokenMarketSnapshot,
     TokenRiskSnapshot,
     TokenSmartMoneySnapshot,
     WalletSmartMoneySnapshot,
+    WalletTokenPosition,
 )
 
-SNAPSHOT_MODELS = (TokenMarketSnapshot, TokenRiskSnapshot, TokenSmartMoneySnapshot, WalletSmartMoneySnapshot)
+SNAPSHOT_MODELS = (TokenMarketSnapshot, TokenRiskSnapshot, TokenSmartMoneySnapshot, WalletSmartMoneySnapshot,
+                   EarlyBuyer, WalletTokenPosition)
 
 
 def visible_conditions(model):
     epoch = select(ResearchState.epoch).where(ResearchState.chain == model.chain).scalar_subquery()
     return (model.snapshot_status == "VALID",
-            or_(model.source_epoch == -1, model.source_epoch == func.coalesce(epoch, 0)),
+            or_(model.source_epoch == -1 if model is TokenMarketSnapshot else False,
+                model.source_epoch == func.coalesce(epoch, 0)),
             *(canonical_fact_conditions(model) if model is TokenMarketSnapshot else ()))
 
 

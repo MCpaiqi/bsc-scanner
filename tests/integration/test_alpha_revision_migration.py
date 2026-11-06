@@ -95,7 +95,7 @@ def test_alpha_revision_upgrade_preserves_inputs_and_requires_new_coverage():
             assert pending.task_status == "COMPLETE" and legacy.alpha_score == 99
         refused = alembic("downgrade", "20261106_0036")
         assert refused.returncode != 0 and "Alpha research revisions exist" in refused.stderr
-        assert "20261106_0038" in alembic("current").stdout
+        assert "20261106_0039" in alembic("current").stdout
     finally:
         scoped.dispose()
         try:

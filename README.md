@@ -24,7 +24,7 @@ uvicorn smms.api.app:app --reload
 
 打开 `http://127.0.0.1:8080/` 即可使用 React Trader Workstation。`/` 默认是工作台，旧版静态页面仅保留在 `/legacy`。标准 Compose 拓扑会同时启动 API、Web、BSC ingestion、Radar audit、Forward outcome、Alpha coverage 和研究快照重建 workers，以及 PostgreSQL、Redis。
 
-当前服务启动前需完成 `20261106_0038` 迁移。Alpha coverage worker 使用确认后的 HTTP 区块扫描证明数据覆盖；缺证据的目标结果保持 UNKNOWN。当前评分版本为 `experimental-v3`，详见 [覆盖与恢复口径](docs/ALPHA_COVERAGE.md)。失效的 Alpha 输入会保留历史并自动创建替代修订，可查询 [来源和重建记录](docs/ALPHA_RECONSTRUCTION.md)。市场、风险和钱包/Token 聪明钱快照也会隐藏失效版本并在后台生成新修订，详见 [派生研究来源与恢复](docs/DERIVED_RESEARCH.md)。
+当前服务启动前需完成 `20261106_0039` 迁移。Alpha coverage worker 使用确认后的 HTTP 区块扫描证明数据覆盖；缺证据的目标结果保持 UNKNOWN。当前评分版本为 `experimental-v3`，详见 [覆盖与恢复口径](docs/ALPHA_COVERAGE.md)。失效的 Alpha 输入会保留历史并自动创建替代修订，可查询 [来源和重建记录](docs/ALPHA_RECONSTRUCTION.md)。市场、风险、钱包/Token 聪明钱、早期买家和持仓快照会隐藏失效版本并在后台生成新修订；历史买家提取已升级为 `dataset-v4`，详见 [派生研究来源与恢复](docs/DERIVED_RESEARCH.md)。
 
 无外网时可打开 `http://127.0.0.1:8000/?demo=1` 预览完整卡片交互。该模式只在显式指定时启用，页面会持续标明数据为演示数据，不会在真实行情失败时自动顶替。
 

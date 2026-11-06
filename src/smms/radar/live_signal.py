@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 
 from smms.backtest.signal_engine import generate_signal
 from smms.db.models import (
-    EarlyBuyer,
     RadarCandidate,
     Signal,
     SignalType,
@@ -65,15 +64,9 @@ class LiveSignalService:
             risk_snapshot = None
         if risk_snapshot is not None and _utc(risk_snapshot.as_of) > cutoff:
             raise ValueError("risk snapshot is newer than signal as_of")
-        early_buyers = list(
-            self.session.scalars(
-                select(EarlyBuyer).where(
-                    EarlyBuyer.chain == token.chain,
-                    EarlyBuyer.token_address == token.address,
-                    EarlyBuyer.first_buy_timestamp <= cutoff,
-                )
-            ).all()
-        )
+        from smms.smart_money.replay import load_early_entries
+
+        early_buyers = load_early_entries(self.session, token.address, as_of=cutoff)
         generated = generate_signal(
             token.address,
             cutoff,
@@ -88,7 +81,7 @@ class LiveSignalService:
                 "as_of": cutoff,
                 "smart_money_score": features.smart_money_score,
             },
-            early_buyers=[{"timestamp": row.first_buy_timestamp} for row in early_buyers],
+            early_buyers=early_buyers.entries,
             risk={
                 "as_of": _utc(risk_snapshot.as_of) if risk_snapshot else cutoff,
                 "overall_risk": features.risk if risk_snapshot is not None or not candidate.risk_snapshot_id else UNKNOWN,
@@ -140,6 +133,8 @@ class LiveSignalService:
                 "as_of": cutoff.isoformat(),
                 "smart_snapshot_id": candidate.smart_snapshot_id,
                 "risk_snapshot_id": candidate.risk_snapshot_id,
+                "early_entry_reason": early_buyers.reason,
+                "early_entry_epoch": early_buyers.source_epoch,
             },
         )
         self.session.add(row)

@@ -13,7 +13,6 @@ from sqlalchemy.orm import Session
 
 from smms.chains.constants import BSC_CHAIN_ID
 from smms.db.models import (
-    EarlyBuyer,
     MarketEvent,
     Pair,
     RadarCandidate,
@@ -29,6 +28,7 @@ from smms.db.models import (
     TradeEvent,
 )
 from smms.observability import metrics
+from smms.smart_money.replay import load_early_entries
 
 from .config import RadarConfig
 from .domain import CandidateStatus as S
@@ -514,20 +514,12 @@ class RadarEngine:
             .limit(1)
         )
         candidate.latest_signal_id = signal.id if signal else None
-        # Existing early-buyer records are bounded materialized rows. After an orphan,
-        # withhold this derived aggregate until rebuilt with explicit provenance.
-        if candidate.invalidated_at is None:
-            count = self.session.scalar(
-                select(func.count(EarlyBuyer.id)).where(
-                    EarlyBuyer.chain == token.chain,
-                    EarlyBuyer.token_address == address,
-                    EarlyBuyer.first_buy_timestamp <= at,
-                )
-            )
-            if count:
-                f["early_buyer_count"] = count
+        if token.chain == "bsc":
+            early = load_early_entries(self.session, address, as_of=at)
+            if early.reason is None:
+                f["early_buyer_count"] = len(early.entries)
             else:
-                reasons["early_buyer_count"] = "NO_WALLET_TRADES"
+                reasons["early_buyer_count"] = early.reason
         if not rows and market_snapshot is None:
             reasons.update({key: "NO_SWAP_DATA" for key in ("buy_count_1m", "sell_count_1m", "buy_count_5m", "sell_count_5m", "unique_buyers_1m", "unique_buyers_5m")})
         if f.get("smart_money_score") == UNKNOWN:
