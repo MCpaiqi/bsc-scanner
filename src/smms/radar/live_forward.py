@@ -27,6 +27,8 @@ from smms.evaluation import (
     positive_price,
 )
 from smms.radar.forward_prices import load_usd_prices
+from smms.research.state import capture_epoch
+from smms.research.visibility import is_current_snapshot
 
 HORIZONS = (("30s", 30), ("1m", 60), ("5m", 300), ("15m", 900), ("30m", 1800), ("1h", 3600), ("4h", 14400), ("24h", 86400))
 OBSERVED_CLASSES = {"WATCH", "INTERESTING", "HIGH_SIGNAL", "REJECTED", "MARKET_BASELINE"}
@@ -66,6 +68,17 @@ def record_observation(
     token = session.get(Token, candidate.token_id)
     if token is None:
         return None
+    from .projection import build_projection, projection_for, radar_config_for
+
+    projection = projection_for(session, candidate)
+    if projection is not None and _utc(projection.as_of) > _utc(at) and signal_class == "MARKET_BASELINE":
+        from .engine import RadarEngine
+
+        projection = build_projection(RadarEngine(session, radar_config_for(session, candidate)), candidate, at=at)
+    if (candidate.projection_id is not None or capture_epoch(session) > 0) and (
+        projection is None or projection.snapshot_status != "VALID" or _utc(projection.as_of) > _utc(at)
+    ):
+        return None
     existing = session.scalar(select(LiveSignalObservation).where(
         LiveSignalObservation.candidate_id == candidate.id,
         LiveSignalObservation.signal_class == signal_class,
@@ -73,7 +86,11 @@ def record_observation(
     if existing:
         return existing
     signal = session.get(Signal, candidate.latest_signal_id) if candidate.latest_signal_id else None
-    features = dict(candidate.features_json or {})
+    if signal is not None and (not is_current_snapshot(session, signal) or _utc(signal.created_at) > _utc(at)):
+        signal = None
+    features = dict(projection.features_json if projection else candidate.features_json or {})
+    smart_id = projection.smart_snapshot_id if projection else candidate.smart_snapshot_id
+    risk_id = projection.risk_snapshot_id if projection else candidate.risk_snapshot_id
     market_cap = _decimal(features.get("market_cap")) or (signal.market_cap if signal else None)
     liquidity = _decimal(features.get("liquidity")) or (signal.entry_liquidity if signal else None)
     observed_at = _utc(at)
@@ -106,8 +123,12 @@ def record_observation(
         "reason": reason,
         "market_cap": str(market_cap) if market_cap is not None else None,
         "liquidity": str(liquidity) if liquidity is not None else None,
-        "smart_money_snapshot_id": candidate.smart_snapshot_id,
-        "risk_snapshot_id": candidate.risk_snapshot_id,
+        "smart_money_snapshot_id": smart_id,
+        "risk_snapshot_id": risk_id,
+        "projection_id": projection.id if projection else None,
+        "projection_epoch": projection.source_epoch if projection else None,
+        "projection_digest": projection.input_manifest.get("digest") if projection else None,
+        "observation_policy": "discovery-event-time-v1" if signal_class == "MARKET_BASELINE" else "observed-transition-v1",
         "feature_version": features.get("feature_version", "radar-features-v1"),
         "config_version": signal.config_version if signal else "config-v1",
         "model_version": signal.model_version if signal else "signal-v1",
@@ -123,8 +144,8 @@ def record_observation(
         price=price,
         market_cap=market_cap,
         liquidity=liquidity,
-        smart_money_snapshot_id=candidate.smart_snapshot_id,
-        risk_snapshot_id=candidate.risk_snapshot_id,
+        smart_money_snapshot_id=smart_id,
+        risk_snapshot_id=risk_id,
         feature_version=str(features.get("feature_version", "radar-features-v1")),
         config_version=signal.config_version if signal else "config-v1",
         model_version=signal.model_version if signal else "signal-v1",

@@ -81,7 +81,7 @@ def test_legacy_buyers_and_positions_survive_and_rebuild_after_restart():
             assert legacy.current_balance == 999 and legacy.snapshot_status == "SUPERSEDED"
         refused = alembic("downgrade", "20261106_0038")
         assert refused.returncode != 0 and "refusing lossy downgrade" in refused.stderr
-        assert "20261106_0039" in alembic("current").stdout
+        assert "20261106_0040" in alembic("current").stdout
     finally:
         engine.dispose()
         try:

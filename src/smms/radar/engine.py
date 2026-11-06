@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from smms.chains.constants import BSC_CHAIN_ID
+from smms.db.facts import canonical_fact_conditions
 from smms.db.models import (
     MarketEvent,
     Pair,
@@ -28,12 +29,13 @@ from smms.db.models import (
     TradeEvent,
 )
 from smms.observability import metrics
-from smms.smart_money.replay import load_early_entries
+from smms.research.lineage import row_values
+from smms.research.visibility import is_current_snapshot
+from smms.smart_money.replay import load_early_entries, usd_price
 
 from .config import RadarConfig
 from .domain import CandidateStatus as S
 from .features import RadarFeatureSnapshot
-from .priority import priority
 
 UNKNOWN = "UNKNOWN"
 SOURCES = {
@@ -74,7 +76,8 @@ class RadarEngine:
             RawChainEvent.chain_id == self.chain_id,
             func.lower(RawChainEvent.transaction_hash) == tx.lower(),
         )
-        row_block_hash = metadata(row).get("block_hash")
+        row_block_hash = (getattr(row, "creation_block_hash", None) or getattr(row, "block_hash", None)
+                          or metadata(row).get("block_hash"))
         if row_block_hash:
             query = query.where(func.lower(RawChainEvent.block_hash) == row_block_hash.lower())
         if not isinstance(row, Pair):
@@ -83,14 +86,20 @@ class RadarEngine:
             index = metadata(row).get("log_index")
             if index is None:
                 # Legacy Pair rows cannot disambiguate several factory logs in one tx.
-                raws = list(self.session.scalars(query).all())
+                raws = list(self.session.scalars(query.execution_options(populate_existing=True)).all())
                 return raws[0] if len(raws) == 1 else None
             query = query.where(RawChainEvent.log_index == index)
-        return self.session.scalar(query)
+        return self.session.scalar(query.execution_options(populate_existing=True))
 
     def canonical(self, row, chain, proof=None):
         if row is None or observed(row) is None:
             return False
+        if type(row) in {Pair, TradeEvent, MarketEvent, TokenLifecycleEvent}:
+            current = self.session.scalar(select(type(row)).where(
+                type(row).id == row.id, *canonical_fact_conditions(type(row)),
+            ).execution_options(populate_existing=True))
+            if current is None:
+                return False
         if isinstance(row, (TradeEvent, MarketEvent)) and (
             getattr(row, "canonical", True) is False or getattr(row, "removed", False) is True
         ):
@@ -104,7 +113,7 @@ class RadarEngine:
             return False
         raw = self.raw_for(row, chain)
         if proof and proof.raw_event_id:
-            raw = self.session.get(RawChainEvent, proof.raw_event_id)
+            raw = self.session.get(RawChainEvent, proof.raw_event_id, populate_existing=True)
             if raw is None:
                 return False
         if proof and proof.raw_required and raw is None:
@@ -129,10 +138,13 @@ class RadarEngine:
                 return False
             if proof and proof.block_hash and raw.block_hash != proof.block_hash:
                 return False
+            expected_hash = getattr(row, "creation_block_hash", None) or getattr(row, "block_hash", None)
+            if expected_hash and raw.block_hash != expected_hash:
+                return False
         return True
 
     def meaningful(self, row):
-        usd = getattr(row, "usd_value", None)
+        usd = getattr(row, "value_usd", None) if isinstance(row, TradeEvent) else getattr(row, "usd_value", None)
         if usd is None:
             usd = metadata(row).get("usd_value")
         native = getattr(row, "native_amount", None)
@@ -266,110 +278,14 @@ class RadarEngine:
             self.session.add(candidate.transition(new, reason=reason, at=at))
 
     def refresh(self, candidate, *, at=None):
+        from .projection import apply_projection, build_projection
+
         at = utc(at or datetime.now(UTC))
-        token = self.session.get(Token, candidate.token_id)
-        proofs = self.session.scalars(
-            select(RadarCandidateEvidence).where(
-                RadarCandidateEvidence.candidate_id == candidate.id
-            )
-        ).all()
-        valid = []
-        for proof in proofs:
-            source = proof.source_key.split(":")[0]
-            model, column = SOURCES[source]
-            source_id = getattr(proof, column)
-            row = self.session.get(model, source_id) if source_id else None
-            ok = self.canonical(row, token.chain, proof) and utc(observed(row)) <= at
-            if proof.valid and not ok:
-                candidate.invalidated_at = at
-            proof.valid = ok
-            if ok:
-                valid.append((row, proof))
-        if not valid:
-            self.move(candidate, S.REJECTED, "NO_CANONICAL_EVIDENCE", at)
-            candidate.features_json = {}
-            candidate.priority_json = {}
-            candidate.priority_score = 0
-            candidate.stage = UNKNOWN
-            candidate.latest_signal_id = candidate.smart_snapshot_id = (
-                candidate.risk_snapshot_id
-            ) = None
-            candidate.data_status = "ORPHANED"
-            candidate.updated_at = at
-            self.session.flush()
-            return candidate
-        valid.sort(key=lambda pair: (utc(observed(pair[0])), pair[1].source_key))
-        first, proof = valid[0]
-        candidate.discovered_at = observed(first)
-        candidate.discovery_source = proof.source_kind
-        candidate.first_seen_block = (
-            getattr(first, "creation_block", None)
-            if isinstance(first, Pair)
-            else first.block_number
-        )
-        candidate.latest_seen_at = max(utc(observed(row)) for row, _ in valid)
-        stages = {
-            "LAUNCHPAD_CREATED": "LAUNCHPAD_DISCOVERED",
-            "PAIR_CREATED": "DEX_PAIR_DISCOVERED",
-            "LAUNCHPAD_LIFECYCLE": "LAUNCHPAD_ACTIVE",
-        }
-        stage = stages.get(proof.source_kind, "TRADING")
-        if any(isinstance(row, TradeEvent) and row.launchpad for row, _ in valid):
-            stage = "LAUNCHPAD_ACTIVE"
-        if any(
-            isinstance(row, TokenLifecycleEvent) and row.event_type == "GRADUATED"
-            for row, _ in valid
-        ):
-            stage = "LAUNCHPAD_GRADUATED"
-        if any(isinstance(row, Pair) for row, _ in valid):
-            stage = "DEX_PAIR_DISCOVERED"
-        if any(
-            isinstance(row, TokenLifecycleEvent)
-            and row.event_type in {"MIGRATED", "MIGRATED_TO_DEX"}
-            for row, _ in valid
-        ):
-            stage = "MIGRATED_TO_DEX"
-        candidate.stage = stage
-        features = self.features(token, candidate, at)
-        candidate.features_json = features
-        candidate.priority_json = priority(features, self.config)
-        candidate.priority_score = Decimal(candidate.priority_json["priority_score"])
-        candidate.data_status = "DEGRADED" if UNKNOWN in features.values() else "OBSERVED"
-        if (at - utc(candidate.latest_seen_at)).total_seconds() > self.config.stale_seconds:
-            self.move(
-                candidate,
-                S.STALE if candidate.status != S.REJECTED else S.DISCOVERED,
-                "ACTIVITY_EXPIRED",
-                at,
-            )
-            if candidate.status == S.DISCOVERED:
-                self.move(candidate, S.STALE, "ACTIVITY_EXPIRED", at)
-        else:
-            if candidate.status in {S.REJECTED, S.STALE}:
-                self.move(candidate, S.DISCOVERED, "CANONICAL_EVIDENCE_RESTORED", at)
-            if candidate.status == S.DISCOVERED:
-                self.move(candidate, S.PREQUALIFIED, "CANONICAL_EVIDENCE_VALID", at)
-            signal = (
-                self.session.get(Signal, candidate.latest_signal_id)
-                if candidate.latest_signal_id
-                else None
-            )
-            label = str(signal.signal_type.value) if signal else UNKNOWN
-            target = (
-                S.HIGH_RISK
-                if features["risk"] in {"HIGH", "CRITICAL"}
-                else {
-                    "STRONG": S.HIGH_SIGNAL,
-                    "INTERESTING": S.INTERESTING,
-                    "HIGH_RISK": S.HIGH_RISK,
-                }.get(label, S.WATCH)
-            )
-            self.move(candidate, target, "LATEST_OBSERVED_FEATURES", at)
-        candidate.updated_at = at
-        self.session.flush()
+        snapshot = build_projection(self, candidate, at=at)
+        apply_projection(self, candidate, snapshot)
         return candidate
 
-    def features(self, token, candidate, at):
+    def features(self, token, candidate, at, *, lineage=None):
         start = at - timedelta(minutes=5)
         address = normalized(token.chain, token.address)
         trades = list(
@@ -379,7 +295,8 @@ class RadarEngine:
                     TradeEvent.token_address == address,
                     TradeEvent.timestamp > start,
                     TradeEvent.timestamp <= at,
-                )
+                    *canonical_fact_conditions(TradeEvent),
+                ).execution_options(populate_existing=True)
             ).all()
         )
         markets = (
@@ -390,7 +307,8 @@ class RadarEngine:
                         MarketEvent.token_address == address,
                         MarketEvent.timestamp > start,
                         MarketEvent.timestamp <= at,
-                    )
+                        *canonical_fact_conditions(MarketEvent),
+                    ).execution_options(populate_existing=True)
                 ).all()
             )
             if token.chain == "bsc"
@@ -408,6 +326,7 @@ class RadarEngine:
                 TokenMarketSnapshot.chain == token.chain,
                 TokenMarketSnapshot.token_address == address,
                 TokenMarketSnapshot.as_of <= at,
+                TokenMarketSnapshot.observed_at <= at,
             )
             .order_by(TokenMarketSnapshot.as_of.desc(), TokenMarketSnapshot.id.desc())
             .limit(1)
@@ -460,15 +379,14 @@ class RadarEngine:
                 )
         for field in ("price", "liquidity", "market_cap"):
             observations = [
-                (utc(r.timestamp), getattr(r, field, None))
+                (utc(r.timestamp), usd_price(r) if field == "price" else getattr(r, field, None))
                 for r in rows
-                if getattr(r, field, None) is not None
+                if (usd_price(r) if field == "price" else getattr(r, field, None)) is not None
             ]
             if observations:
                 f[field] = str(max(observations, key=lambda p: p[0])[1])
         lower = at - timedelta(seconds=self.config.snapshot_max_age_seconds)
-        if candidate.invalidated_at:
-            lower = max(lower, utc(candidate.invalidated_at))
+        dependencies = []
         for model, version_field, version, target in (
             (
                 TokenSmartMoneySnapshot,
@@ -489,8 +407,13 @@ class RadarEngine:
                 )
                 .order_by(model.as_of.desc(), model.id.desc())
                 .limit(1)
+                .execution_options(populate_existing=True)
             )
             setattr(candidate, target, snap.id if snap else None)
+            if snap:
+                dependencies.append({"kind": snap.__tablename__, "id": snap.id,
+                                     "digest": (snap.input_manifest or {}).get("digest"),
+                                     "source_epoch": snap.source_epoch})
             if isinstance(snap, TokenSmartMoneySnapshot) and snap.data_status in {"OK", "DEGRADED"}:
                 f.update(
                     known_smart_wallet_count=snap.smart_wallet_count,
@@ -513,18 +436,29 @@ class RadarEngine:
             .order_by(Signal.created_at.desc(), Signal.id.desc())
             .limit(1)
         )
-        candidate.latest_signal_id = signal.id if signal else None
+        candidate.latest_signal_id = signal.id if signal and is_current_snapshot(self.session, signal) else None
         if token.chain == "bsc":
             early = load_early_entries(self.session, address, as_of=at)
             if early.reason is None:
                 f["early_buyer_count"] = len(early.entries)
             else:
                 reasons["early_buyer_count"] = early.reason
+            if lineage is not None:
+                lineage["early_entry"] = {"entries": early.entries, "reason": early.reason,
+                                          "source_manifest": early.source_manifest}
         if not rows and market_snapshot is None:
             reasons.update({key: "NO_SWAP_DATA" for key in ("buy_count_1m", "sell_count_1m", "buy_count_5m", "sell_count_5m", "unique_buyers_1m", "unique_buyers_5m")})
         if f.get("smart_money_score") == UNKNOWN:
             reasons["smart_money_score"] = "NO_SMART_MONEY_SAMPLE"
         f["reason_codes"] = reasons
+        if lineage is not None:
+            lineage.update(facts={"activity": [{"table": row.__tablename__, "values": row_values(row)} for row in rows]},
+                           dependencies=dependencies)
+            lineage["facts"]["early_entry"] = lineage.pop("early_entry", {})
+            if market_snapshot is not None:
+                lineage["dependencies"].append({"kind": market_snapshot.__tablename__, "id": market_snapshot.id,
+                                                 "digest": (market_snapshot.input_manifest or {}).get("digest"),
+                                                 "source_epoch": market_snapshot.source_epoch})
         return RadarFeatureSnapshot.from_mapping(f).as_dict()
 
     def recover(self, *, at=None):

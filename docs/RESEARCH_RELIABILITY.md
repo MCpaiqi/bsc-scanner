@@ -17,7 +17,7 @@ explicit UNKNOWN states. Preserve existing local data and untracked source.
   features, outcomes or newly aggregated risk; genuine losers remain in the universe.
 - [x] R4: Alpha negatives require complete horizon coverage; missing coverage stays
   UNKNOWN; pending work survives downtime; result versions and denominators are explicit.
-- [x] R5: forward endpoints respect a bounded time tolerance and canonical facts;
+- [ ] R5: forward endpoints respect a bounded time tolerance and canonical facts;
   drawdown uses price / running peak - 1; historical and live evaluation agree.
 - [ ] R6: normal and deferred candidate projections have equivalent audit/baseline/
   rule effects; event fanout happens after commit and survives retry without ghosts.
@@ -314,3 +314,76 @@ separate gate; schema creation inside regressions does not prove migration parit
 - Verified zero remaining owned schemas, then removed the purpose-labelled test
   PostgreSQL container/anonymous volume. Temporary SQL was removed. Existing
   untracked product/data/release files remain preserved and outside this commit.
+
+### Additional acceptance evidence to retain
+
+- Provider → risk recipe field/unit compatibility is still an R14 acceptance gate.
+  During Radar/evidence work, a receipt-recovery test exposed that risk-v1 does
+  not consume the provider's `is_honeypot` field. The receipt test initially
+  assumed a CRITICAL policy that risk-v1 does not define; it now verifies source
+  recovery/availability separately from scoring policy, also using supported
+  `mintable` evidence. This is not a claim that risk-v1 handles honeypot flags.
+  Preserve legacy semantics and introduce/verify the corrected risk recipe before
+  declaring the overall research desk complete; validate provider aliases and units.
+- The final R3 audit must also check invalid in-flight wallet computation lineage
+  when a newer wallet publication wins (current trusted outputs are epoch-guarded),
+  and remove historical TokenScore cache fallbacks while closing dataset rebuilds.
+- R5 source parity is reopened while closing historical datasets: current
+  HistoricalDatasetBuilder._event_payload still exports generic `price`, whereas
+  the live Forward adapter uses explicit USD evidence. Shared price-path-v2
+  arithmetic/live endpoint tests do not prove those extraction paths agree.
+  Verify a distinct quote/USD counterexample and correct/version extraction before
+  checking R5 complete again. Historical per-pair and currency consistency are
+  required, not waived by the earlier calculation-level verification.
+
+### Radar, Signal and dependency reconstruction slice, 2026-11-06
+
+- Continued R3 with immutable RadarFeatureObservation and Signal revisions using
+  source epochs, exact manifests, predecessor/audit access and durable jobs. Normal
+  candidate views/filters, audit scheduling, production rules and new Forward
+  observations check canonical projection pointers. Invalidated caches display
+  REBUILDING/UNKNOWN rather than preserving old values under a new timestamp.
+- Discovery predicates, parent/raw provenance, explicit USD prices, observation
+  cutoffs and retained ORM values are rechecked. Recent sells refresh observation
+  time without inventing discovery evidence. Signal parameters preserve complete
+  weights/threshold/config, including Decimal formatting used by config hashes.
+- Corrected same-epoch inputs now transactionally invalidate transitive dependents
+  through a persisted reverse graph. Prerequisite publication holds shared row
+  locks, closing the uncommitted-edge race without taking the canonical epoch lock.
+  Bounded cyclic repair handles same-epoch INVALIDATED rows as well as older epochs;
+  jobs wait on prerequisite recovery and never rewind a newer live candidate.
+- 0040 preserves/quarantines legacy Radar feature/priority/status context and Signal
+  values, backfills prior dependencies and quarantines their previously unchecked
+  dependents once. Legacy-defaults-v1 reconstruction is explicit; lossy downgrade
+  is refused. Rebuild status history is labelled at actual processing time while
+  research as_of remains the original cutoff. Rollback restores invalidation too.
+- Chain proof eligibility shares normalized evidence aliases with the resolver;
+  current epoch, subject/proof/field/value and exact fact/raw fingerprints are
+  required. Candidate evidence resolves stored observations, selecting the latest
+  per provider/field. Unversioned Token evidence/launchpad cache cannot restore
+  canonical labels. Live collection uses completion time; historical risk rebuild
+  reuses eligible immutable receipts without network and excludes future receipts.
+- Fresh review found seven material gaps: delayed baselines dropped, configured
+  policy replaced by defaults, same-epoch dependencies left current, chain aliases
+  bypassing validation, future provider prices admitted, old provider values chosen,
+  and a two-statement epoch read race. All were reproduced and covered in the one
+  fix pass. Sampled baselines now use a reconstructed discovery-time projection,
+  T0-specific IDs/digest and UNKNOWN when no price existed. Shared wallet replay
+  parameters exclude unrelated Token admission/window policies, fixing a regression
+  where an old job could disturb a fresh custom policy through wallet revisions.
+- Verification: backend **628 passed, 20 skipped, 13 existing warnings**; database
+  command **104 passed**, comprising **102 actual PostgreSQL cases**, one async
+  SQLite API case and one heartbeat simulation. Web **42 passed**, typecheck/build;
+  Ruff/whitespace/Compose configuration/Alembic 0040 head and offline SQL generation
+  (**1285 lines**) passed. PostgreSQL cases include source/dependent publication
+  fencing, reorg progress, rollback, dependency backfill and restart reconstruction.
+- Verified zero owned schemas, then removed the purpose-labelled PostgreSQL test
+  container/anonymous volume and temporary SQL/log files. Existing untracked local
+  product/data/release files are preserved; no real provider calls, production
+  rewrite, deployment, merge or push occurred.
+- Rulings on review exclusions: existing Forward entry/outcome reconstruction and
+  materialized datasets/backtests remain R3; event projection/outbox and SSE remain
+  R6/R7; pagination/workflow remain R9/R10; bounded dense history/retention/latency,
+  clean-checkout delivery, access control and full Compose/provider acceptance remain
+  R11–R14. The additional acceptance evidence above is retained. The full original
+  objective and R3/R5/R6/R7/R9–R14 are still OPEN; this slice is not programme completion.

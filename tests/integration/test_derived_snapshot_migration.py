@@ -96,8 +96,8 @@ def test_pre_lineage_snapshots_are_preserved_quarantined_and_reconstructed():
             rebuilt_market = session.scalar(select(TokenMarketSnapshot).where(TokenMarketSnapshot.source == "ON_CHAIN_TRADE_AGGREGATION"))
             assert rebuilt_market.volume_5m == 10 and rebuilt_market.price_usd is None
         refused = alembic("downgrade", "20261106_0037")
-        assert refused.returncode != 0 and "Derived research revisions exist" in refused.stderr
-        assert "20261106_0039" in alembic("current").stdout
+        assert refused.returncode != 0 and "refusing" in refused.stderr
+        assert "20261106_0040" in alembic("current").stdout
     finally:
         engine.dispose()
         try:

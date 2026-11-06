@@ -625,14 +625,16 @@ class TokenScore(Base):
     token: Mapped[Token] = relationship(back_populates="scores")
 
 
-class Signal(Base):
+class Signal(SnapshotLineageMixin, Base):
     __tablename__ = "signals"
     __table_args__ = (
-        UniqueConstraint("token_id", "created_at", "model_version", name="uq_signals_token_time_version"),
+        UniqueConstraint("token_id", "created_at", "model_version", "research_revision", name="uq_signals_token_time_version"),
         Index("ix_signals_created_model", "created_at", "model_version"),
+        Index("ix_signals_rebuild", "chain", "source_epoch", "snapshot_status", "id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    chain: Mapped[str] = mapped_column(String(32), nullable=False, default="bsc", server_default="bsc")
     token_id: Mapped[int] = mapped_column(ForeignKey("tokens.id", ondelete="CASCADE"), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False, index=True

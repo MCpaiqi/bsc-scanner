@@ -9,7 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import MetaData, Table, create_engine, select, text
 from sqlalchemy.orm import Session
 
 from smms.db.models import (
@@ -17,7 +17,6 @@ from smms.db.models import (
     LiveSignalOutcome,
     MarketEvent,
     Pair,
-    RadarCandidate,
     Token,
 )
 from smms.evaluation import FORWARD_EVALUATION_VERSION
@@ -51,12 +50,15 @@ def test_forward_upgrade_preserves_legacy_values_and_refuses_lossy_downgrade():
             token = Token(chain="bsc", address="migration-token")
             session.add(token)
             session.flush()
-            candidate = RadarCandidate(token_id=token.id, discovered_at=t0, latest_seen_at=t0,
-                                       discovery_source="DEX_PAIR", discovery_reason="fixture")
-            session.add(candidate)
-            session.flush()
+            # Seed the historical schema without sending future ORM columns.
+            candidate_table = Table("radar_candidates", MetaData(), autoload_with=session.connection())
+            candidate_id = session.execute(candidate_table.insert().values(
+                token_id=token.id, discovered_at=t0, latest_seen_at=t0, discovery_source="DEX_PAIR",
+                discovery_reason="fixture", status="DISCOVERED", stage="UNKNOWN", priority_score=0,
+                features_json={}, priority_json={}, data_status="UNKNOWN", created_at=t0, updated_at=t0, revision=1,
+            ).returning(candidate_table.c.id)).scalar_one()
             observation = LiveSignalObservation(
-                candidate_id=candidate.id, token_id=token.id, chain="bsc",
+                candidate_id=candidate_id, token_id=token.id, chain="bsc",
                 token_address=token.address, observed_at=t0, signal_class="HIGH_SIGNAL",
                 price=1, sample_group="HIGH_SIGNAL", t0_snapshot_json={
                     "price": "1", "price_basis": "USD", "pair_address": "migration-pair",
@@ -103,7 +105,7 @@ def test_forward_upgrade_preserves_legacy_values_and_refuses_lossy_downgrade():
         assert "Forward versions coexist" in refused.stderr
         current = alembic("current")
         assert current.returncode == 0
-        assert "20261106_0039" in current.stdout
+        assert "20261106_0040" in current.stdout
         with scoped.connect() as connection:
             assert connection.execute(text("SELECT count(*) FROM live_signal_outcomes "
                                            "WHERE horizon = '30s'")).scalar_one() == 2

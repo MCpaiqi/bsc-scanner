@@ -4,14 +4,16 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from smms.db.models import (
     EarlyBuyer,
+    RadarCandidate,
+    RadarFeatureObservation,
     ResearchRebuildCursor,
     ResearchRebuildJob,
-    ResearchState,
+    Signal,
     TokenMarketSnapshot,
     TokenRiskSnapshot,
     TokenSmartMoneySnapshot,
@@ -33,9 +35,11 @@ def _repair(session, *, epoch, now, batch_size):
         ).with_for_update())
         rows = session.scalars(select(model).where(
             model.chain == "bsc", model.id > cursor.last_id,
-            model.source_epoch >= 0, model.source_epoch < epoch,
-            model.snapshot_status.in_(("VALID", "UNAVAILABLE")),
-        ).order_by(model.id).limit(batch_size).execution_options(include_invalid_snapshots=True)).all()
+            model.source_epoch >= 0,
+            or_(model.source_epoch < epoch, model.snapshot_status == "INVALIDATED"),
+            model.snapshot_status.in_(("VALID", "UNAVAILABLE", "INVALIDATED")),
+        ).order_by(model.id).limit(batch_size)
+            .execution_options(include_invalid_snapshots=True, populate_existing=True)).all()
         for row in rows:
             insert_once(session, ResearchRebuildJob, {
                 "kind": kind, "snapshot_id": row.id, "requested_epoch": epoch,
@@ -47,7 +51,39 @@ def _repair(session, *, epoch, now, batch_size):
 
 def _rebuild(session, old):
     parameters = (old.input_manifest or {}).get("parameters", {})
-    if isinstance(old, (EarlyBuyer, WalletTokenPosition)):
+    if isinstance(old, (RadarFeatureObservation, Signal)):
+        from smms.radar.config import RadarConfig
+        from smms.radar.engine import RadarEngine
+        from smms.radar.live_signal import LiveSignalService
+        from smms.radar.projection import apply_projection, build_projection
+
+        from .dependencies import require_rebuilt_dependencies
+
+        require_rebuilt_dependencies(session, old)
+        candidate_id = old.candidate_id if isinstance(old, RadarFeatureObservation) else parameters.get("candidate_id")
+        candidate = session.get(RadarCandidate, candidate_id) if candidate_id else session.scalar(
+            select(RadarCandidate).where(RadarCandidate.token_id == old.token_id))
+        if candidate is None:
+            return "CANDIDATE_DELETED"
+        if isinstance(old, RadarFeatureObservation):
+            engine = RadarEngine(session, RadarConfig(**parameters.get("config", {})))
+            current = build_projection(engine, candidate, at=old.as_of, config_hash=old.config_hash,
+                                       reconstruction_policy=parameters.get("reconstruction_policy", "legacy-defaults-v1" if not parameters else None))
+            if candidate.projection_id == old.id:
+                apply_projection(engine, candidate, current)
+        else:
+            if old.model_version != "signal-v1":
+                return "UNSUPPORTED_VERSION"
+            from smms.backtest.signal_engine import SignalWeights
+
+            LiveSignalService(session, radar_config=RadarConfig(**parameters.get("radar_config", {})),
+                              weights=SignalWeights.from_mapping(parameters.get("weights")),
+                              threshold=parameters.get("threshold", 50),
+                              config_version=parameters.get("config_version", "phase-7.9.4"),
+                              reconstruction_policy=parameters.get("reconstruction_policy", "legacy-defaults-v1" if not parameters else None)).materialize(
+                candidate, as_of=old.created_at,
+            )
+    elif isinstance(old, (EarlyBuyer, WalletTokenPosition)):
         from smms.smart_money.early_buyers import EarlyBuyerConfig
         from smms.smart_money.engine import EarlyBuyerEngine
         from smms.smart_money.replay import REPLAY_VERSION
@@ -132,7 +168,7 @@ def rebuild_due(session, *, now: datetime, batch_size: int = 16) -> int:
             continue
         model = MODELS[job.kind]
         old = session.scalar(select(model).where(model.id == job.snapshot_id)
-                             .execution_options(include_invalid_snapshots=True))
+                             .execution_options(include_invalid_snapshots=True, populate_existing=True))
         if old is None or old.snapshot_status == "SUPERSEDED":
             job.status = "SUPERSEDED"
             continue
@@ -152,7 +188,7 @@ def rebuild_due(session, *, now: datetime, batch_size: int = 16) -> int:
                     getattr(model, name) == getattr(old, name) for name in IDENTITY[model]
                 ]).order_by(model.research_revision.desc()).limit(1)
                     .execution_options(include_invalid_snapshots=True))
-                current = session.scalar(select(ResearchState.epoch).where(ResearchState.chain == "bsc"))
+                current = capture_epoch(session)
                 if latest is None or latest.source_epoch != current:
                     job.status = "STALE_EPOCH"
                 else:

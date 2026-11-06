@@ -10,9 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from smms.db.models import EvidenceObservationRecord
+from smms.evaluation import utc
 from smms.evidence.resolver import EvidenceResolver, ResolvedEvidence
 from smms.observability import source_health_registry
 
+from .chain import eligible
 from .models import EvidenceObservation
 from .provider import Capability, ExternalEvidenceProvider
 
@@ -50,11 +52,11 @@ class ExternalEvidenceOrchestrator:
             chain, token_address, as_of=as_of, chain_observations=chain_observations
         )
         observations.extend(self.load(chain, token_address, as_of=cutoff))
-        eligible = [item for item in observations if item.observed_at <= cutoff]
-        for item in eligible:
+        allowed = [item for item in observations if eligible(self.session, item, chain=chain, token=token_address, as_of=cutoff)]
+        for item in allowed:
             self._persist(item)
         self.session.flush()
-        return self.resolver.resolve(eligible, now=cutoff)
+        return self.resolver.resolve(allowed, now=cutoff)
 
     async def _collect(
         self,
@@ -78,7 +80,7 @@ class ExternalEvidenceOrchestrator:
                     )
                 except Exception as exc:  # noqa: BLE001 - optional providers are non-fatal
                     source_health_registry.record_failure(provider.provider_name, exc)
-        return cutoff, observations
+        return (cutoff if as_of is not None else datetime.now(UTC)), observations
 
     def refresh_sync(
         self,
@@ -107,11 +109,11 @@ class ExternalEvidenceOrchestrator:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 cutoff, observations = executor.submit(asyncio.run, collect()).result()
         observations.extend(self.load(chain, token_address, as_of=cutoff))
-        eligible = [item for item in observations if item.observed_at <= cutoff]
-        for item in eligible:
+        allowed = [item for item in observations if eligible(self.session, item, chain=chain, token=token_address, as_of=cutoff)]
+        for item in allowed:
             self._persist(item)
         self.session.flush()
-        return self.resolver.resolve(eligible, now=cutoff)
+        return self.resolver.resolve(allowed, now=cutoff)
 
     def load(
         self, chain: str, token_address: str, *, as_of: datetime
@@ -121,9 +123,10 @@ class ExternalEvidenceOrchestrator:
                 EvidenceObservationRecord.chain == chain,
                 EvidenceObservationRecord.subject_address == token_address,
                 EvidenceObservationRecord.observed_at <= as_of,
-            )
+                EvidenceObservationRecord.fetched_at <= as_of,
+            ).execution_options(populate_existing=True)
         ).all()
-        return [
+        observations = [
             EvidenceObservation(
                 chain=row.chain,
                 subject_type=row.subject_type,
@@ -132,16 +135,17 @@ class ExternalEvidenceOrchestrator:
                 value=row.value_json,
                 source=row.source,
                 source_type=row.source_type,
-                observed_at=row.observed_at,
-                fetched_at=row.fetched_at,
+                observed_at=utc(row.observed_at),
+                fetched_at=utc(row.fetched_at),
                 confidence=float(row.confidence) if row.confidence is not None else None,
                 evidence_level=row.evidence_level,
                 raw_reference=row.raw_reference_json,
-                expires_at=row.expires_at,
+                expires_at=utc(row.expires_at) if row.expires_at else None,
                 stale=row.stale,
             )
             for row in rows
         ]
+        return [item for item in observations if eligible(self.session, item, chain=chain, token=token_address, as_of=as_of)]
 
     def _persist(self, item: EvidenceObservation) -> None:
         existing = self.session.scalar(

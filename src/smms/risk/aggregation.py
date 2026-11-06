@@ -11,6 +11,7 @@ from smms.chains.constants import normalize_address, validate_bsc_chain
 from smms.db.facts import canonical_fact_conditions
 from smms.db.models import Token, TokenRiskSnapshot, TradeEvent
 from smms.db.repositories import TokenRiskSnapshotRepository
+from smms.external_evidence.chain import filter_resolved
 from smms.research.lineage import manifest, row_values
 from smms.research.state import capture_epoch
 
@@ -67,7 +68,16 @@ class RiskAggregationService:
             # Token cache fields have no historical/fork identity. Explicit
             # resolved evidence and canonical trades are the reproducible inputs.
             observation = {"address": token.address, "metadata_json": {}}
-            evidence = None if historical_rebuild else resolved_evidence
+            if historical_rebuild:
+                from smms.evidence import EvidenceResolver
+                from smms.external_evidence.orchestrator import ExternalEvidenceOrchestrator
+
+                stored = ExternalEvidenceOrchestrator(self.session, providers=[]).load(self.chain, token.address, as_of=cutoff)
+                evidence = EvidenceResolver().resolve(stored, now=cutoff)
+            else:
+                evidence = filter_resolved(
+                    self.session, resolved_evidence, chain=self.chain, token=token.address, as_of=cutoff, epoch=source_epoch,
+                )
             analysis = analyze_token_risk(
                 observation,
                 trades=trades,
@@ -85,7 +95,9 @@ class RiskAggregationService:
                     "input_policy": "canonical-research-v1",
                 }, facts={"token_observation": observation,
                            "trades": [row_values(trade) for trade in trades],
-                           "resolved_evidence": _json_safe(provenance)},
+                           "resolved_evidence": _json_safe(provenance),
+                           "evidence_sources": _json_safe({name: list(getattr(item, "observations", ()))
+                                                           for name, item in (evidence or {}).items()})},
                     notes=["HISTORICAL_TOKEN_CACHE_UNAVAILABLE" if historical_rebuild else "UNVERSIONED_TOKEN_CACHE_UNAVAILABLE"]),
                 chain=self.chain,
                 token_address=analysis.token,

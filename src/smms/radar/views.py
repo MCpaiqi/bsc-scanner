@@ -4,9 +4,9 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
-from smms.db.models import Pair, RadarCandidate, RadarCandidateEvidence, Signal, Token
+from smms.db.facts import canonical_fact_conditions
+from smms.db.models import Pair, RadarCandidate, Signal, Token
 from smms.evidence import EvidenceResolver
-from smms.external_evidence.models import EvidenceObservation
 from smms.market.identity import display_text
 from smms.observability import freshness_status
 
@@ -17,39 +17,32 @@ from .engine import UNKNOWN, normalized, utc
 def candidate_view(session, candidate):
     token = session.get(Token, candidate.token_id)
     signal = session.get(Signal, candidate.latest_signal_id) if candidate.latest_signal_id else None
-    evidence_payload = (token.metadata_json or {}).get("evidence", {}) if isinstance(token.metadata_json, dict) else {}
-    if isinstance(evidence_payload, list):
-        try:
-            def observation(item):
-                item = dict(item)
-                for key in ("observed_at", "fetched_at", "expires_at"):
-                    value = item.get(key)
-                    if isinstance(value, str):
-                        item[key] = datetime.fromisoformat(value)
-                return EvidenceObservation(**item)
-            evidence_payload = EvidenceResolver().summary(
-                [observation(item) for item in evidence_payload]
-            )
-        except (TypeError, ValueError):
-            evidence_payload = {}
-    canonical = session.scalars(
-        select(RadarCandidateEvidence).where(
-            RadarCandidateEvidence.candidate_id == candidate.id,
-            RadarCandidateEvidence.valid.is_(True),
-        )
-    ).all()
-    for item in canonical:
-        evidence_payload.setdefault(item.source_key, {
-            "value": True,
-            "resolved_value": True,
-            "source": "CHAIN",
-            "resolution_source": item.source_kind,
-            "evidence_level": "ON_CHAIN_VERIFIED",
-            "confidence": 1.0,
-            "freshness": "FRESH",
-            "conflict": False,
-            "conflicting_sources": [],
-        })
+    from smms.external_evidence.chain import canonical_observations
+    from smms.external_evidence.orchestrator import ExternalEvidenceOrchestrator
+    from smms.research.state import capture_epoch
+    from smms.research.visibility import is_current_snapshot
+
+    from .engine import RadarEngine
+    from .features import RadarFeatureSnapshot
+    from .projection import projection_for
+
+    projection = projection_for(session, candidate)
+    legacy = projection is None and candidate.projection_id is None and capture_epoch(session) == 0
+    pending = projection is None and not legacy
+    usable = legacy or (projection is not None and projection.snapshot_status == 'VALID')
+    if projection is not None and usable:
+        signal = session.scalar(select(Signal).join(RadarCandidate, RadarCandidate.latest_signal_id == Signal.id).where(
+            RadarCandidate.id == candidate.id, Signal.created_at <= projection.as_of,
+        ).execution_options(populate_existing=True))
+    if signal is not None and (not usable or not is_current_snapshot(session, signal)):
+        signal = None
+    features = (projection.features_json if projection is not None else candidate.features_json if legacy
+                else RadarFeatureSnapshot.unknown(age_seconds=0, market_phase=UNKNOWN).as_dict())
+    ranking = projection.priority_json if projection is not None else candidate.priority_json if legacy else {}
+    data_status = 'REBUILDING' if pending else projection.data_status if projection is not None else candidate.data_status
+    observations = ExternalEvidenceOrchestrator(session, providers=[]).load(token.chain, token.address, as_of=datetime.now(UTC))
+    observations.extend(canonical_observations(RadarEngine(session), candidate, as_of=datetime.now(UTC)))
+    evidence_payload = EvidenceResolver().summary(observations)
     now = utc(datetime.now(UTC))
     observed_at = utc(candidate.latest_seen_at) if candidate.latest_seen_at else None
     updated_at = utc(candidate.updated_at) if candidate.updated_at else None
@@ -62,20 +55,21 @@ def candidate_view(session, candidate):
         fresh_after_seconds=60,
         stale_after_seconds=3600,
     )
+    if pending:
+        freshness, observed_at, freshness_seconds = "UNKNOWN", None, None
     source_status = (
-        "OK"
-        if candidate.data_status not in {"UNKNOWN", "ORPHANED"} and freshness == "FRESH"
+        "REBUILDING" if pending else "OK"
+        if data_status not in {"UNKNOWN", "ORPHANED", "REBUILDING"} and freshness == "FRESH"
         else "STALE"
         if freshness in {"STALE", "EXPIRED"}
-        else candidate.data_status
+        else data_status
     )
     pair = session.scalar(
         select(Pair).where(
             Pair.chain_id == 56,
-            Pair.canonical.is_(True),
-            Pair.removed.is_(False),
+            *canonical_fact_conditions(Pair), Pair.creation_timestamp <= now,
             (Pair.token0_address == token.address) | (Pair.token1_address == token.address),
-        ).order_by(Pair.creation_block.desc().nullslast(), Pair.id.desc())
+        ).order_by(Pair.creation_block.desc().nullslast(), Pair.id.desc()).limit(1).execution_options(populate_existing=True)
     )
     platform = "PancakeSwap V2" if pair is not None and pair.dex == "pancakeswap" else UNKNOWN
     return {
@@ -84,25 +78,32 @@ def candidate_view(session, candidate):
         "pair_address": pair.address if pair is not None else None,
         "symbol": display_text(token.symbol, token.address),
         "name": display_text(token.name, token.address),
-        "launchpad": token.launchpad or platform,
+        "launchpad": ((projection.context_json.get("launchpad") if projection else None)
+                      or (token.launchpad if legacy else None) or platform),
         "discovered_at": candidate.discovered_at,
         "discovery_source": candidate.discovery_source,
         "discovery_reason": candidate.discovery_reason,
         "first_seen_block": candidate.first_seen_block,
         "latest_seen_at": candidate.latest_seen_at,
-        "status": candidate.status.value,
-        "stage": candidate.stage,
-        "priority_score": float(candidate.priority_score),
-        "components": candidate.priority_json.get("components", {}),
-        "priority_policy": candidate.priority_json.get("policy", "radar-priority-v1"),
-        "priority_config": candidate.priority_json.get("config", {}),
-        "features": candidate.features_json,
-        "data_status": candidate.data_status,
+        "status": candidate.status.value if usable else "REJECTED" if projection is not None else UNKNOWN,
+        "stage": projection.context_json.get("stage", UNKNOWN) if projection is not None else candidate.stage if legacy else UNKNOWN,
+        "priority_score": float(ranking.get("priority_score", candidate.priority_score if legacy else 0)),
+        "components": ranking.get("components", {}),
+        "priority_policy": ranking.get("policy", "radar-priority-v1"),
+        "priority_config": ranking.get("config", {}),
+        "features": features,
+        "data_status": data_status,
+        "research": {"source_epoch": projection.source_epoch, "revision": projection.research_revision,
+                     "digest": projection.input_manifest.get("digest"),
+                     "lineage_url": f"/api/research/snapshots/radar_feature_observations/{projection.id}"} if projection else None,
         "evidence": evidence_payload,
         "latest_signal_class": signal.signal_type.value if signal else UNKNOWN,
         "latest_signal_score": float(signal.signal_strength)
         if signal and signal.signal_strength is not None
         else UNKNOWN,
+        "latest_signal_research": {"source_epoch": signal.source_epoch, "revision": signal.research_revision,
+                                   "digest": signal.input_manifest.get("digest"),
+                                   "lineage_url": f"/api/research/snapshots/signals/{signal.id}"} if signal else None,
         "as_of": updated_at,
         "observed_at": observed_at,
         "updated_at": updated_at,
@@ -135,20 +136,21 @@ def candidates(
     query = select(RadarCandidate).join(Token, Token.id == RadarCandidate.token_id)
     if chain:
         query = query.where(Token.chain == chain)
-    if launchpad:
-        query = query.where(Token.launchpad == launchpad)
     views = []
     # GETs read the durable projection. Ingestion and the radar worker own refreshes.
     for row in session.scalars(query.order_by(RadarCandidate.id)).all():
-        if status is not None and row.status != status:
+        view = candidate_view(session, row)
+        if launchpad and view["launchpad"] != launchpad:
             continue
-        if status is None and row.status in {CandidateStatus.REJECTED, CandidateStatus.STALE}:
+        if status is not None and view["status"] != status.value:
             continue
-        if row.priority_score < min_priority:
+        if status is None and view["status"] in {CandidateStatus.REJECTED.value, CandidateStatus.STALE.value}:
             continue
-        if priority is not None and row.priority_score < priority:
+        if view["priority_score"] < min_priority:
             continue
-        features = row.features_json or {}
+        if priority is not None and view["priority_score"] < priority:
+            continue
+        features = view["features"] or {}
         if smart_money is not None:
             score = features.get("smart_money_score", UNKNOWN)
             try:
@@ -168,11 +170,11 @@ def candidates(
                     continue
             except (TypeError, ValueError):
                 continue
-        if risk and row.features_json.get("risk", UNKNOWN) != risk:
+        if risk and features.get("risk", UNKNOWN) != risk:
             continue
         if age is not None and (utc(at) - utc(row.discovered_at)).total_seconds() > age:
             continue
-        views.append(candidate_view(session, row))
+        views.append(view)
     if sort == "age":
         views.sort(key=lambda v: (v.get("latest_seen_at") or v.get("discovered_at") or at, v["token_address"]))
     elif sort == "liquidity":

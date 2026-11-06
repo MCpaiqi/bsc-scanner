@@ -37,6 +37,16 @@ class ResearchSnapshotLock(Base):
     identity: Mapped[str] = mapped_column(String(64), primary_key=True)
 
 
+class ResearchSnapshotDependency(Base):
+    __tablename__ = "research_snapshot_dependencies"
+    __table_args__ = (Index("ix_research_dependency_source", "source_kind", "source_id"),)
+    parent_kind: Mapped[str] = mapped_column(String(64), primary_key=True)
+    parent_id: Mapped[int] = mapped_column(primary_key=True)
+    source_kind: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_id: Mapped[int] = mapped_column(primary_key=True)
+    source_digest: Mapped[str | None] = mapped_column(String(64))
+
+
 class ResearchRebuildCursor(Base):
     __tablename__ = "research_rebuild_cursors"
     kind: Mapped[str] = mapped_column(String(64), primary_key=True)

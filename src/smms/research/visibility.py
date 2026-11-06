@@ -6,7 +6,9 @@ from sqlalchemy.orm import with_loader_criteria
 from smms.db.facts import canonical_fact_conditions
 from smms.db.models import (
     EarlyBuyer,
+    RadarFeatureObservation,
     ResearchState,
+    Signal,
     TokenMarketSnapshot,
     TokenRiskSnapshot,
     TokenSmartMoneySnapshot,
@@ -15,7 +17,7 @@ from smms.db.models import (
 )
 
 SNAPSHOT_MODELS = (TokenMarketSnapshot, TokenRiskSnapshot, TokenSmartMoneySnapshot, WalletSmartMoneySnapshot,
-                   EarlyBuyer, WalletTokenPosition)
+                   EarlyBuyer, WalletTokenPosition, RadarFeatureObservation, Signal)
 
 
 def visible_conditions(model):

@@ -10,7 +10,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from smms.chains.constants import BSC_CHAIN_ID
-from smms.db.models import RadarAuditJob, RadarCandidate, RadarCandidateEvidence, Token
+from smms.db.models import RadarAuditJob, RadarCandidate, Token
 from smms.db.models.base import utc_now
 from smms.observability import metrics, source_health_registry
 
@@ -103,8 +103,15 @@ class AuditQueue:
         """Derive an explainable trigger from the fast projection before enqueueing."""
         if not isinstance(candidate.features_json, dict):
             raise TypeError("candidate features must use RadarFeatureSnapshot")
-        features = RadarFeatureSnapshot.from_mapping(candidate.features_json)
-        priority = float(candidate.priority_score or 0)
+        from smms.research.state import capture_epoch
+
+        from .projection import projection_for
+
+        projection = projection_for(self.session, candidate)
+        if projection is None and capture_epoch(self.session) > 0:
+            return self.schedule(candidate, reason="canonical_projection_rebuilding", priority=0, now=now)
+        features = RadarFeatureSnapshot.from_mapping(projection.features_json if projection else candidate.features_json)
+        priority = float(projection.priority_json.get("priority_score", 0) if projection else candidate.priority_score or 0)
         if features.smart_money_entry:
             reason = "smart_money_entry"
             priority = max(priority, 100)
@@ -328,7 +335,6 @@ class AuditWorker:
         from smms.config.settings import get_settings
         from smms.external_evidence import (
             DexScreenerEvidenceProvider,
-            EvidenceObservation,
             ExternalEvidenceOrchestrator,
             GoPlusEvidenceProvider,
         )
@@ -347,12 +353,15 @@ class AuditWorker:
         candidate = self.session.get(RadarCandidate, job.candidate_id)
         if candidate is None:
             raise ValueError(f"candidate {job.candidate_id} disappeared")
+        from smms.external_evidence.chain import canonical_observations
+
+        settings = get_settings()
+        RadarEngine(self.session, settings.radar, chain_id=BSC_CHAIN_ID).refresh(candidate, at=now)
         if candidate.status.value == "REJECTED":
             return
         before_status = candidate.status
         before_signal = candidate.latest_signal_id
         before_features = dict(candidate.features_json or {})
-        settings = get_settings()
         providers = []
         if settings.external_evidence_enabled and settings.dexscreener_enabled:
             providers.append(
@@ -380,44 +389,24 @@ class AuditWorker:
                     enabled=settings.goplus_auth_configured,
                 )
             )
-        chain_observations = [
-            EvidenceObservation(
-                chain=job.chain,
-                subject_type="TOKEN",
-                subject_address=job.token_address,
-                field=f"canonical_{proof.source_kind.lower()}",
-                value=True,
-                source="smms_chain",
-                source_type="CHAIN",
-                observed_at=job.started_at or now,
-                fetched_at=job.started_at or now,
-                confidence=1.0,
-                evidence_level="ON_CHAIN_VERIFIED",
-                raw_reference={"source_key": proof.source_key},
-            )
-            for proof in self.session.scalars(
-                select(RadarCandidateEvidence).where(
-                    RadarCandidateEvidence.candidate_id == candidate.id,
-                    RadarCandidateEvidence.valid.is_(True),
-                )
-            ).all()
-        ]
+        chain_observations = canonical_observations(RadarEngine(self.session, settings.radar), candidate, as_of=now)
         resolved = ExternalEvidenceOrchestrator(
             self.session, providers=providers
         ).refresh_sync(
             job.chain,
             job.token_address,
-            as_of=now,
+            as_of=None,
             chain_observations=chain_observations,
         )
+        now = utc_now()
         RiskAggregationService(self.session, chain=job.chain).refresh(
             as_of=now,
             token_address=job.token_address,
             resolved_evidence=resolved,
         )
-        RadarEngine(self.session, chain_id=BSC_CHAIN_ID).refresh(candidate, at=now)
-        LiveSignalService(self.session).materialize(candidate, as_of=now)
-        RadarEngine(self.session, chain_id=BSC_CHAIN_ID).refresh(candidate, at=now)
+        RadarEngine(self.session, settings.radar, chain_id=BSC_CHAIN_ID).refresh(candidate, at=now)
+        LiveSignalService(self.session, radar_config=settings.radar).materialize(candidate, as_of=now)
+        RadarEngine(self.session, settings.radar, chain_id=BSC_CHAIN_ID).refresh(candidate, at=now)
         if candidate.status != before_status or candidate.latest_signal_id != before_signal:
             record_observation(self.session, candidate, candidate.status.value, at=now)
         after_features = dict(candidate.features_json or {})

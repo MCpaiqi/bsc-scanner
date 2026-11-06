@@ -337,7 +337,14 @@ class IntelligenceAggregationService:
             wallet_record = wallet_repository.upsert(
                 WalletSmartMoneySnapshot(
                     source_epoch=source_epoch, input_manifest=manifest(
-                        kind="wallet_smart_money_snapshots", parameters={**parameters, "wallet_address": wallet},
+                        # Token admission/window settings do not change this
+                        # wallet replay. Including them causes policy-only
+                        # revisions to invalidate unrelated token dependents.
+                        kind="wallet_smart_money_snapshots", parameters={
+                            "as_of": cutoff, "score_version": self.score_version,
+                            "profile_version": self.profile_version, "wallet_address": wallet,
+                            "input_policy": "canonical-wallet-replay-v1",
+                        },
                         facts={"trades": [row_values(row) for row in wallet_rows],
                                "pairs": [row_values(row) for row in relevant_pairs]},
                     ),

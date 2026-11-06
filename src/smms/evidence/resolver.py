@@ -5,6 +5,7 @@ field while retaining provenance, confidence, freshness and disagreements.
 """
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -51,7 +52,7 @@ DEFAULT_TTLS: dict[str, timedelta] = {
 DEFAULT_TTL = timedelta(minutes=5)
 
 
-def _level(value: Any, *, source_type: str = "") -> str:
+def normalized_evidence_level(value: Any, *, source_type: str = "") -> str:
     raw = str(value or EvidenceLevel.UNKNOWN.value)
     aliases = {
         "DERIVED": EvidenceLevel.DERIVED_FROM_CHAIN.value,
@@ -66,6 +67,9 @@ def _level(value: Any, *, source_type: str = "") -> str:
     if str(source_type).upper() in {"DERIVED", "DERIVED_CHAIN", "CHAIN_DERIVED"}:
         return EvidenceLevel.DERIVED_FROM_CHAIN.value
     return EvidenceLevel.UNKNOWN.value
+
+
+_level = normalized_evidence_level
 
 
 def _equal(left: Any, right: Any) -> bool:
@@ -140,7 +144,16 @@ class EvidenceResolver:
             grouped.setdefault(item.field, []).append(item)
         result: dict[str, ResolvedEvidence] = {}
         for field, values in grouped.items():
-            ranked = sorted(values, key=lambda item: _RANK.get(_level(item.evidence_level, source_type=item.source_type), 0), reverse=True)
+            latest = {}
+            for item in values:
+                key = (item.chain, item.subject_type, item.subject_address, item.source)
+                previous = latest.get(key)
+                order = lambda value: (value.fetched_at, value.observed_at, json.dumps(value.as_dict(), sort_keys=True, default=str))
+                if previous is None or order(item) > order(previous):
+                    latest[key] = item
+            values = list(latest.values())
+            ranked = sorted(values, key=lambda item: (_RANK.get(_level(item.evidence_level, source_type=item.source_type), 0),
+                                                       item.fetched_at, item.observed_at, item.source), reverse=True)
             winner = next((item for item in ranked if item.value is not None), ranked[0])
             winner_level = _level(winner.evidence_level, source_type=winner.source_type)
             non_null = [item for item in values if item.value is not None]

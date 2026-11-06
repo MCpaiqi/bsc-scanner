@@ -1,7 +1,7 @@
 # Canonical derived research revisions
 
-Apply migrations through `20261106_0039` before starting updated services. This
-covers market, risk, wallet/token intelligence, early-buyer and position snapshots;
+Apply migrations through `20261106_0040` before starting updated services. This
+covers market, risk, wallet/token intelligence, buyers/positions and Radar/Signal snapshots;
 existing values remain stored as history. R3 still has the scope listed below.
 
 ## Visibility and history
@@ -39,8 +39,10 @@ audit revision, excluded from ordinary reads; it does not prove zero market volu
 
 Risk uses explicit resolved evidence and canonical trades. Unversioned Token cache
 fields have no historical/fork identity and are excluded. Historical reconstruction
-cannot reacquire missing external evidence: those dimensions remain UNKNOWN while
-canonical behavior may still indicate risk.
+replays eligible immutable provider receipts at the original cutoff without network
+calls. Missing/future external evidence remains UNKNOWN while canonical behavior
+may still indicate risk. Provider field/unit compatibility with the risk recipe
+remains an explicit programme gate (including is_honeypot support in risk-v1).
 
 Known parameters are preserved. Missing legacy intelligence parameters use an
 explicit `legacy-defaults-v1` policy in the new manifest; old parameters are not
@@ -97,6 +99,10 @@ API/dataset/position replay still needs R11 dense-history streaming/retention wo
 Source queries refresh retained ORM values before recording a current epoch;
 independent writer corrections cannot be certified using old identity-map values.
 
+Shared wallet replay manifests contain wallet replay parameters. Token admission
+thresholds and early-buyer windows belong to token rollups; changing those settings
+cannot create wallet revisions or invalidate unrelated token policies.
+
 Buyer/position snapshots preserve as_of, recipe/configuration hash, epoch and
 immutable revisions. Losing the last canonical input publishes an UNAVAILABLE
 audit revision; ordinary reads cannot return the old wallet. Existing audit and
@@ -112,10 +118,66 @@ Old materialized datasets remain immutable artifacts; new canonical buyer
 extraction has a distinct dataset-v4 config hash. They still require the artifact
 staleness/rebuild work below.
 
+## Radar, Signal and chain evidence
+
+RadarFeatureObservation freezes canonical discovery proofs, five-minute activity,
+bounded early-entry sources, prerequisite snapshot IDs/digests, configuration,
+original cutoff, feature values and priority. Candidate caches reference a snapshot.
+Lists/details, Signal generation, audit scheduling, production rule evaluation and
+new Forward observation writes verify that boundary. An invalidated cache displays
+REBUILDING with unknown features/score while work recovers. Cached Token evidence,
+launchpad or candidate smart/risk values cannot certify canonical research.
+
+Signal generation uses those immutable features and explicit USD prices. Same-time
+corrections append revisions; old scores remain available through the existing
+research audit endpoint. Signal manifests include complete weights/threshold/
+configuration, preserving even Decimal formatting needed by existing config hashes.
+Normal payloads expose Radar and Signal lineage URLs. Discovery conditions and
+parent/raw provenance are rechecked, while recent sell activity still refreshes
+observation time without becoming discovery evidence.
+
+Bounded durable reconstruction supports both tables. Invalidated prerequisites must
+recover before dependent outputs finalize; unsupported/missing sources stay
+unavailable. Jobs preserve original cutoff/configuration and cannot rewind a newer
+live candidate. Rebuild status transitions are labelled RESEARCH_REBUILD at actual
+processing time; the research observation retains its original as_of.
+
+Supersession also invalidates dependents within the same canonical epoch. A durable
+reverse dependency graph is populated from manifests; a recursive update marks
+transitive outputs INVALIDATED in the source revision's transaction. Publication
+holds shared locks on prerequisite rows, so a source correction cannot miss an
+uncommitted dependency edge. Rollback restores both source and dependents. Cyclic
+repair schedules same-epoch invalidations as well as older epochs. 0040 backfills
+earlier dependency edges and quarantines those older dependent outputs once.
+
+Current pointer reads compare against the persisted epoch inside the same SELECT.
+Configured discovery thresholds are inherited/preserved across Signal and evidence
+validation, and current audit runs use settings.radar. All evidence-level/source-type
+aliases share resolver classification and require the same chain proof. Resolution
+uses the latest applicable observation per provider/field rather than treating that
+provider's own historical values as competing sources.
+
+Delayed discovery still records sampled market baselines at original discovery
+event time. The writer builds a projection at that cutoff, retaining T0-specific
+source IDs/digest rather than using future processing-time features. Missing entry
+prices remain UNKNOWN; this does not fabricate a tradable price at PairCreated.
+
+0040 preserves old Radar feature/priority/state context and Signal values at epoch
+zero. Legacy missing parameters use explicit legacy-defaults-v1 policy rather than
+claiming the former configuration recovered. Lossy downgrade is refused after new
+revisions or rebuild work. Raw unversioned imports are unavailable after migration.
+
+Stored CHAIN observations require a current epoch, matching canonical source/proof,
+subject, field/value and exact source/raw fingerprints. The supported proof format
+certifies canonical discovery assertions; unreferenced historical RPC/contract
+claims remain UNKNOWN. External primary provider observations retain provider
+provenance, freshness and availability timestamps. Risk rechecks resolved chain
+observations at its own epoch. Stored evidence is immutable. Live provider collection
+uses completion time; explicit historical cutoffs never admit later responses.
+
 ## Remaining programme work
 
-R3 still covers radar cached features/signals, Evidence
-Resolver dependencies, Forward entry observations and materialized datasets/
+R3 still covers reconstruction of existing Forward entry/outcome observations and materialized datasets/
 backtests. These artifacts are not validated by association with these snapshots.
 Supported source mutation must use canonical invalidation; raw SQL audit access
 is separate from trusted current APIs.

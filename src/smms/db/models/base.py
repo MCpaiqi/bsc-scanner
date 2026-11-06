@@ -23,14 +23,17 @@ def _research_visibility(execute_state):
 @event.listens_for(Session, "before_flush")
 def _immutable_research_inputs(session, _context, _instances):
     from .research import SnapshotLineageMixin
+    from .runtime import EvidenceObservationRecord
 
     for row in session.dirty:
+        if isinstance(row, EvidenceObservationRecord) and session.is_modified(row, include_collections=False):
+            raise ValueError("stored evidence observations are immutable; append a new observation")
         if isinstance(row, SnapshotLineageMixin):
             state = inspect(row)
             status = state.attrs.snapshot_status.history
             changed = any(state.attrs[column.key].history.has_changes()
                           for column in state.mapper.column_attrs if column.key != "snapshot_status")
-            if changed or (status.has_changes() and row.snapshot_status != "SUPERSEDED"):
+            if changed or (status.has_changes() and row.snapshot_status not in {"SUPERSEDED", "INVALIDATED"}):
                 raise ValueError("published research inputs and results are immutable; append a revision")
 
 

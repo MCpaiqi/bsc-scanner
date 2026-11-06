@@ -69,6 +69,7 @@ class ReplayInputs:
     facts: tuple[dict, ...]
     entry_only: bool = False
     source_limit: bool = False
+    event_limit: int | None = None
 
     def cutoff(self, as_of=None):
         cutoff = utc(as_of or self.as_of)
@@ -97,6 +98,7 @@ class ReplayInputs:
         return manifest(kind=kind, parameters={
             "recipe": REPLAY_VERSION, "chain": self.chain, "token_address": self.token,
             "as_of": cutoff, "config": asdict(config or EarlyBuyerConfig()),
+            **({"entry_only": True, "event_limit": self.event_limit, "source_limit": self.source_limit} if self.entry_only else {}),
         }, facts={"pair": pair, "events": [
             fact for fact in self.facts if datetime.fromisoformat(fact["values"]["timestamp"]) <= cutoff
         ]}, notes=[] if pair else ["UNKNOWN_CANONICAL_CREATION"])
@@ -168,7 +170,7 @@ def load_replay_inputs(session, token, *, as_of, chain="bsc", entry_only=False, 
         raise StaleReplayInputs("canonical epoch changed during early-buyer replay")
     # Each source is limited independently; reading a sentinel is conservative
     # even when the other source overlaps it. Never claim an unsaturated count.
-    return ReplayInputs(chain, token, as_of, epoch, row_values(pair), tuple(txs), tuple(facts), entry_only, source_limit)
+    return ReplayInputs(chain, token, as_of, epoch, row_values(pair), tuple(txs), tuple(facts), entry_only, source_limit, event_limit)
 
 
 @dataclass(frozen=True)
@@ -176,14 +178,16 @@ class EarlyEntryResult:
     entries: tuple[dict, ...]
     reason: str | None
     source_epoch: int
+    source_manifest: dict
 
 
 def load_early_entries(session, token, *, as_of):
     """Bounded hot-path membership; never replay lifetime positions to count buyers."""
     inputs = load_replay_inputs(session, token, as_of=as_of, entry_only=True, event_limit=RADAR_ENTRY_EVENT_LIMIT)
     buyers = inputs._buyers()
+    source = inputs.input_manifest()
     if inputs.source_limit and len(buyers) < EarlyBuyerConfig().effective_window_value:
-        return EarlyEntryResult((), "EARLY_ENTRY_SOURCE_LIMIT", inputs.source_epoch)
+        return EarlyEntryResult((), "EARLY_ENTRY_SOURCE_LIMIT", inputs.source_epoch, source)
     entries = tuple({"first_buy_time": row.first_buy_time, "wallet": row.wallet_address} for row in buyers)
     reason = None if entries else "NO_CANONICAL_EARLY_BUYERS"
-    return EarlyEntryResult(entries, reason, inputs.source_epoch)
+    return EarlyEntryResult(entries, reason, inputs.source_epoch, source)
