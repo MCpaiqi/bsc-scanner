@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -23,15 +24,22 @@ from smms.db.repositories import (
     TokenSmartMoneySnapshotRepository,
     WalletSmartMoneySnapshotRepository,
 )
-from smms.research.lineage import manifest, row_values
+from smms.research.lineage import digest, manifest, row_values
 from smms.research.state import capture_epoch
 
 from .early_buyers import EarlyBuyerConfig, identify_early_buyers
 from .profile import WalletProfile, WalletProfileReplay
+from .replay import usd_price
 from .scoring import SmartMoneyMetrics, aggregate_token_smart_money, calculate_smart_money_score
 
 SCORE_VERSION = "v2"
 PROFILE_VERSION = "v1"
+WALLET_INPUT_POLICY = "canonical-wallet-usd-v2"
+TOKEN_INPUT_POLICY = "canonical-token-usd-v2"
+
+
+class StaleAggregationInputs(ValueError):
+    """Replay or publication lost its exact source generation; retry the read."""
 
 
 @dataclass(frozen=True)
@@ -58,7 +66,6 @@ def _json_value(value: Any) -> Any:
 
 
 def _trade_payload(row: TradeEvent) -> dict[str, Any]:
-    metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
     return {
         "wallet_address": row.trader_address,
         "token_address": row.token_address,
@@ -68,25 +75,26 @@ def _trade_payload(row: TradeEvent) -> dict[str, Any]:
         "event_index": row.event_index,
         "block_number": row.block_number,
         "token_amount": row.token_amount,
-        "native_amount": row.native_amount,
-        # Native/quote amounts are never USD.  Missing valuation stays unknown.
-        "usd_value": metadata.get("usd_value", row.value_usd),
-        "price": row.price,
-        "market_cap": row.market_cap,
-        "liquidity": row.liquidity,
-        "metadata_json": metadata,
+        "native_amount": None,
+        # Explicit valuation only. Cached outcome/creation annotations cannot
+        # override canonical Pair evidence or supply future performance labels.
+        "usd_value": row.value_usd,
+        "price": usd_price(row),
+        "price_basis": "USD",
+        "market_cap": None,
+        "liquidity": None,
+        "metadata_json": {},
     }
 
 
 def _score_profile(profile: WalletProfile):
-    completeness = Decimal("0.8") if profile.sample_size else Decimal(0)
+    completeness = Decimal("0.8") * Decimal(profile.valued_positions) / Decimal(profile.sample_size) if profile.sample_size else Decimal(0)
     coverage = min(Decimal(1), Decimal(profile.sample_size) / Decimal(12))
     quality = max(
         Decimal(0),
         Decimal(1) - (profile.bot_probability + profile.wash_probability) / Decimal(2),
     )
-    result = calculate_smart_money_score(
-        SmartMoneyMetrics(
+    inputs = SmartMoneyMetrics(
             win_rate=profile.win_rate,
             avg_roi=profile.roi,
             median_roi=profile.median_roi,
@@ -106,8 +114,8 @@ def _score_profile(profile: WalletProfile):
             historical_coverage=coverage,
             trade_quality=quality,
         )
-    )
-    return result, completeness, coverage, quality
+    result = calculate_smart_money_score(inputs)
+    return result, completeness, coverage, quality, inputs
 
 
 class IntelligenceAggregationService:
@@ -132,6 +140,10 @@ class IntelligenceAggregationService:
         self.early_buyer_config = early_buyer_config or EarlyBuyerConfig()
         self.reconstruction_policy = reconstruction_policy
 
+    def _check_epoch(self, epoch):
+        if capture_epoch(self.session, self.chain) != epoch:
+            raise StaleAggregationInputs("canonical input epoch changed during aggregation")
+
     def refresh(self, *, as_of: datetime | None = None) -> AggregationResult:
         cutoff = self._cutoff(as_of)
         source_epoch = capture_epoch(self.session, self.chain)
@@ -143,13 +155,13 @@ class IntelligenceAggregationService:
                     TradeEvent.timestamp <= cutoff,
                     *canonical_fact_conditions(TradeEvent),
                 )
-                .order_by(TradeEvent.timestamp, TradeEvent.id)
+                .order_by(TradeEvent.timestamp, TradeEvent.id).execution_options(populate_existing=True)
             ).all()
         )
         token_addresses = {row.token_address for row in trades}
         tokens = list(
             self.session.scalars(
-                select(Token).where(Token.chain == self.chain, Token.address.in_(token_addresses))
+                select(Token).where(Token.chain == self.chain, Token.address.in_(token_addresses)).execution_options(populate_existing=True)
             ).all()
         ) if token_addresses else []
         pairs = list(
@@ -160,7 +172,7 @@ class IntelligenceAggregationService:
                     Pair.creation_timestamp <= cutoff,
                     *canonical_fact_conditions(Pair),
                     or_(Pair.token0_address.in_(token_addresses), Pair.token1_address.in_(token_addresses)),
-                )
+                ).execution_options(populate_existing=True)
             ).all()
         ) if token_addresses else []
         created_at = self._created_at(pairs, tokens)
@@ -208,7 +220,7 @@ class IntelligenceAggregationService:
                     TradeEvent.timestamp <= cutoff,
                     *canonical_fact_conditions(TradeEvent),
                 )
-                .order_by(TradeEvent.timestamp, TradeEvent.id)
+                .order_by(TradeEvent.timestamp, TradeEvent.id).execution_options(populate_existing=True)
             ).all()
         )
         affected_wallets = {normalize_address(row.trader_address, chain=self.chain) for row in token_trades}
@@ -222,7 +234,7 @@ class IntelligenceAggregationService:
                     TradeEvent.timestamp <= cutoff,
                     *canonical_fact_conditions(TradeEvent),
                     )
-                    .order_by(TradeEvent.timestamp, TradeEvent.id)
+                    .order_by(TradeEvent.timestamp, TradeEvent.id).execution_options(populate_existing=True)
                 ).all()
             )
             if affected_wallets
@@ -231,7 +243,7 @@ class IntelligenceAggregationService:
         observed_tokens = {row.token_address for row in wallet_trades} | {address}
         tokens = list(
             self.session.scalars(
-                select(Token).where(Token.chain == self.chain, Token.address.in_(observed_tokens))
+                select(Token).where(Token.chain == self.chain, Token.address.in_(observed_tokens)).execution_options(populate_existing=True)
             ).all()
         )
         pairs = list(
@@ -242,7 +254,7 @@ class IntelligenceAggregationService:
                     Pair.creation_timestamp <= cutoff,
                     *canonical_fact_conditions(Pair),
                     or_(Pair.token0_address.in_(observed_tokens), Pair.token1_address.in_(observed_tokens)),
-                )
+                ).execution_options(populate_existing=True)
             ).all()
         )
         by_wallet: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -263,12 +275,12 @@ class IntelligenceAggregationService:
         trades = list(self.session.scalars(select(TradeEvent).where(
             TradeEvent.chain == self.chain, TradeEvent.trader_address == address,
             TradeEvent.timestamp <= cutoff, *canonical_fact_conditions(TradeEvent),
-        ).order_by(TradeEvent.timestamp, TradeEvent.id)))
+        ).order_by(TradeEvent.timestamp, TradeEvent.id).execution_options(populate_existing=True)))
         tokens = {row.token_address for row in trades}
         pairs = list(self.session.scalars(select(Pair).where(
             Pair.chain_id == 56, Pair.creation_timestamp <= cutoff, *canonical_fact_conditions(Pair),
             or_(Pair.token0_address.in_(tokens), Pair.token1_address.in_(tokens)),
-        ))) if tokens else []
+        ).execution_options(populate_existing=True))) if tokens else []
         return self._materialize(cutoff=cutoff, by_wallet={address: [_trade_payload(row) for row in trades]},
                                  by_token={}, created_at=self._created_at(pairs), source_epoch=source_epoch,
                                  source_trades=trades, source_pairs=pairs)
@@ -309,14 +321,15 @@ class IntelligenceAggregationService:
         source_pairs: list[Pair],
     ) -> AggregationResult:
         wallet_repository = WalletSmartMoneySnapshotRepository(self.session)
-        profiles: dict[str, WalletProfile] = {}
+        self._check_epoch(source_epoch)
+        profiles = {}
         confidence_scores: dict[str, Decimal] = {}
         wallet_sources = {}
         parameters = {"as_of": cutoff, "score_version": self.score_version,
                       "profile_version": self.profile_version, "min_wallet_score": self.min_wallet_score,
                       "early_buyer_config": asdict(self.early_buyer_config),
                       "reconstruction_policy": self.reconstruction_policy,
-                      "input_policy": "canonical-research-v1"}
+                      "input_policy": TOKEN_INPUT_POLICY}
         for wallet, wallet_trades in by_wallet.items():
             profile = WalletProfileReplay(chain=self.chain).replay(
                 wallet,
@@ -328,14 +341,11 @@ class IntelligenceAggregationService:
                 },
                 as_of=cutoff,
             )
-            score, completeness, coverage, quality = _score_profile(profile)
-            profiles[wallet] = profile
-            confidence_scores[wallet] = score.confidence_score
+            score, completeness, coverage, quality, score_inputs = _score_profile(profile)
             wallet_rows = [row for row in source_trades if row.trader_address == wallet]
             related = {row.token_address for row in wallet_rows}
             relevant_pairs = [row for row in source_pairs if related & {row.token0_address, row.token1_address}]
-            wallet_record = wallet_repository.upsert(
-                WalletSmartMoneySnapshot(
+            computed = WalletSmartMoneySnapshot(
                     source_epoch=source_epoch, input_manifest=manifest(
                         # Token admission/window settings do not change this
                         # wallet replay. Including them causes policy-only
@@ -343,10 +353,11 @@ class IntelligenceAggregationService:
                         kind="wallet_smart_money_snapshots", parameters={
                             "as_of": cutoff, "score_version": self.score_version,
                             "profile_version": self.profile_version, "wallet_address": wallet,
-                            "input_policy": "canonical-wallet-replay-v1",
+                            "input_policy": WALLET_INPUT_POLICY,
                         },
                         facts={"trades": [row_values(row) for row in wallet_rows],
-                               "pairs": [row_values(row) for row in relevant_pairs]},
+                               "pairs": [row_values(row) for row in relevant_pairs],
+                               "score_inputs": asdict(score_inputs), "normalized_trades": wallet_trades},
                     ),
                     chain=self.chain,
                     wallet_address=wallet,
@@ -364,13 +375,24 @@ class IntelligenceAggregationService:
                     components_json=_json_value(score.components),
                     contributions_json=_json_value(score.contributions),
                 )
-            )
+            self._check_epoch(source_epoch)
+            wallet_record = wallet_repository.upsert(computed)
+            if (wallet_record.source_epoch != source_epoch
+                    or wallet_record.input_manifest.get("digest") != computed.input_manifest.get("digest")
+                    or digest(wallet_record.profile_json) != digest(computed.profile_json)
+                    or wallet_record.score != computed.score or wallet_record.snapshot_status != "VALID"):
+
+                raise StaleAggregationInputs("publication winner differs from computed wallet inputs")
+            profiles[wallet] = SimpleNamespace(smart_money_score=wallet_record.score,
+                behavioral_indicators=wallet_record.profile_json.get("behavioral_indicators", {}))
+            confidence_scores[wallet] = wallet_record.confidence_score
 
             wallet_sources[wallet] = {"kind": "wallet_smart_money_snapshots", "id": wallet_record.id,
                                       "digest": wallet_record.input_manifest["digest"], "source_epoch": wallet_record.source_epoch}
 
         token_repository = TokenSmartMoneySnapshotRepository(self.session)
         for token_address, token_trades in by_token.items():
+            self._check_epoch(source_epoch)
             token_created_at = created_at.get(token_address)
             early = (
                 identify_early_buyers(
@@ -412,11 +434,11 @@ class IntelligenceAggregationService:
                     ),
                     chain=self.chain,
                     token_address=token_address,
-                    smart_wallet_count=summary.smart_wallet_count or 0,
-                    smart_money_buy_usd=summary.smart_money_buy_usd or 0,
-                    smart_money_sell_usd=summary.smart_money_sell_usd or 0,
-                    smart_money_net_flow=summary.smart_money_net_flow or 0,
-                    early_smart_buy_count=summary.early_smart_buy_count or 0,
+                    smart_wallet_count=summary.smart_wallet_count,
+                    smart_money_buy_usd=summary.smart_money_buy_usd,
+                    smart_money_sell_usd=summary.smart_money_sell_usd,
+                    smart_money_net_flow=summary.smart_money_net_flow,
+                    early_smart_buy_count=summary.early_smart_buy_count,
                     smart_money_score=summary.smart_money_score,
                     confidence=confidence,
                     confidence_score=confidence_score,
@@ -427,6 +449,7 @@ class IntelligenceAggregationService:
                 )
             )
 
+        self._check_epoch(source_epoch)
         return AggregationResult(
             as_of=cutoff,
             score_version=self.score_version,

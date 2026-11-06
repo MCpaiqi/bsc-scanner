@@ -60,7 +60,7 @@ async def snapshot_lineage(kind: str, snapshot_id: int):
         raise HTTPException(404, "research snapshot kind not found")
     async with session_scope(get_settings()) as session:
         row = await session.scalar(select(model).where(model.id == snapshot_id, model.chain == "bsc")
-                                   .execution_options(include_invalid_snapshots=True))
+                                   .execution_options(include_invalid_snapshots=True, populate_existing=True))
         epoch = await session.scalar(select(ResearchState.epoch).where(ResearchState.chain == "bsc")) or 0
         payload = row_values(row) if row else None
     if payload is None:

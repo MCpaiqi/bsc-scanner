@@ -118,7 +118,7 @@ def test_orphaned_pair_cannot_supply_early_entry_via_token_cache(research_sessio
         as_of=T0 + timedelta(seconds=20),
     )
     snapshot = research_session.scalar(select(TokenSmartMoneySnapshot))
-    assert snapshot.early_smart_buy_count == 0
+    assert snapshot.early_smart_buy_count is None and snapshot.data_status == "UNKNOWN"
 
 
 def test_json_orphan_markers_are_excluded_from_intelligence(research_session):
@@ -141,7 +141,7 @@ def test_parent_pair_invalidation_excludes_still_flagged_child_trades(research_s
         TOKEN, as_of=T0 + timedelta(seconds=20),
     )
     row = research_session.scalar(select(TokenSmartMoneySnapshot))
-    assert row.smart_money_net_flow == 0 and row.data_status == "UNKNOWN"
+    assert row.smart_money_net_flow is None and row.data_status == "UNKNOWN"
     assert row.input_manifest["facts"]["trades"] == []
 
 
@@ -153,7 +153,7 @@ def test_full_refresh_does_not_leave_a_removed_subjects_previous_result_current(
     trade.canonical, trade.removed = False, True
     service.refresh(as_of=T0 + timedelta(seconds=20))
     row = research_session.scalar(select(TokenSmartMoneySnapshot))
-    assert row.smart_money_net_flow == 0 and row.data_status == "UNKNOWN"
+    assert row.smart_money_net_flow is None and row.data_status == "UNKNOWN"
 
 
 @pytest.mark.asyncio
@@ -234,7 +234,7 @@ def test_durable_rebuild_recovers_after_a_removed_wallets_last_trade(research_se
     assert current.id != old.id and current.sample_size == 0
     assert old.sample_size == 1
     token = research_session.scalar(select(TokenSmartMoneySnapshot))
-    assert token.smart_money_net_flow == 0 and token.data_status == "UNKNOWN"
+    assert token.smart_money_net_flow is None and token.data_status == "UNKNOWN"
 
 
 def test_rebuild_cannot_replace_a_fresh_custom_policy_published_during_its_read(research_session, monkeypatch):
@@ -357,8 +357,9 @@ def test_reorg_can_commit_while_an_old_producer_is_reading(research_session, mon
 
     def producer():
         with Session(research_session.bind) as session:
-            IntelligenceAggregationService(session, min_wallet_score=0).refresh(as_of=T0 + timedelta(seconds=20))
-            session.commit()
+            with pytest.raises(ValueError, match="epoch"):
+                IntelligenceAggregationService(session, min_wallet_score=0).refresh(as_of=T0 + timedelta(seconds=20))
+            session.rollback()
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(producer)

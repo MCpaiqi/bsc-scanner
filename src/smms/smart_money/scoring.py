@@ -168,6 +168,7 @@ def aggregate_token_smart_money(token_address: str, wallet_profiles: Mapping[str
         for item in early_buyers
     }
     buy = sell = Decimal(0)
+    missing_buy = missing_sell = False
     early_wallets_seen: set[str] = set()
     for trade in trade_rows:
         if isinstance(trade, Mapping):
@@ -182,19 +183,32 @@ def aggregate_token_smart_money(token_address: str, wallet_profiles: Mapping[str
             side = getattr(trade, "side", "")
         if str(token).lower() != token_address.lower() or str(wallet).lower() not in wallets:
             continue
-        amount = Decimal(str(value or 0))
         side = str(getattr(side, "value", side)).upper()
+        try:
+            amount = Decimal(str(value)) if value is not None else None
+            if amount is not None and (not amount.is_finite() or amount < 0):
+                amount = None
+        except (ArithmeticError, TypeError, ValueError):
+            amount = None
         if side == "BUY":
-            buy += amount
+            if amount is None:
+                missing_buy = True
+            else:
+                buy += amount
             if str(wallet).lower() in early_set:
                 early_wallets_seen.add(str(wallet).lower())
         elif side == "SELL":
-            sell += amount
+            if amount is None:
+                missing_sell = True
+            else:
+                sell += amount
     ranked = tuple(w for w, _ in sorted(selected.values(), key=lambda x: x[1], reverse=True)[:5])
     avg_score = (sum((s for _, s in selected.values()), Decimal(0)) / Decimal(len(selected))).quantize(Decimal("0.01")) if selected else None
     if not selected:
         return TokenSmartMoneySummary(token_address, None, None, None, None, (), None, None, "UNKNOWN")
-    return TokenSmartMoneySummary(token_address, len(selected), buy, sell, buy - sell, ranked, len(early_wallets_seen), avg_score, "CHAIN_EVENTS")
+    return TokenSmartMoneySummary(token_address, len(selected), None if missing_buy else buy,
+        None if missing_sell else sell, None if missing_buy or missing_sell else buy - sell,
+        ranked, len(early_wallets_seen), avg_score, "DEGRADED" if missing_buy or missing_sell else "CHAIN_EVENTS")
 
 
 def exponential_time_decay(age_days: Decimal | float, half_life_days: Decimal | float = 180) -> Decimal:

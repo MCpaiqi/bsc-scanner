@@ -113,15 +113,19 @@ def test_legacy_radar_and_signal_values_are_preserved_and_reconstructed():
                 rebuild_due(session, now=cutoff + timedelta(days=1), batch_size=1)
                 session.commit()
             current = session.scalar(select(Signal))
-            assert current is not None and current.source_epoch == 1 and current.smart_money_score is None
+            smart = session.scalar(select(TokenSmartMoneySnapshot))
+            assert smart is not None and smart.data_status == "CHAIN_EVENTS"
+            assert smart.smart_money_net_flow == 10 and smart.confidence == "LOW"
+            assert current is not None and current.source_epoch == 1
+            assert current.smart_money_score == smart.smart_money_score and current.smart_money_score != 99
             assert current.input_manifest["parameters"]["reconstruction_policy"] == "legacy-defaults-v1"
             old = session.scalar(select(Signal).where(Signal.research_revision == 0)
                                   .execution_options(include_invalid_snapshots=True))
             assert old.signal_strength == 99 and old.snapshot_status == "SUPERSEDED"
-            assert candidate_view(session, session.get(RadarCandidate, candidate_id))["features"]["smart_money_score"] == "UNKNOWN"
+            assert candidate_view(session, session.get(RadarCandidate, candidate_id))["features"]["smart_money_score"] == str(smart.smart_money_score)
         refused = alembic("downgrade", "20261106_0039")
         assert refused.returncode != 0 and "refusing lossy downgrade" in refused.stderr
-        assert "20261106_0042" in alembic("current").stdout
+        assert "20261106_0043" in alembic("current").stdout
     finally:
         engine.dispose()
         try:

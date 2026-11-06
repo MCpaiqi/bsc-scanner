@@ -155,8 +155,9 @@ def _trade_payload(row: TradeEvent) -> dict[str, object]:
         "token_address": row.token_address,
         "token_amount": row.token_amount,
         "native_amount": row.native_amount,
-        "usd_value": row.metadata_json.get("usd_value") if row.metadata_json else None,
+        "usd_value": row.value_usd,
         "price": row.price,
+        "price_usd": row.price_usd,
         "market_cap": row.market_cap,
         "liquidity": row.liquidity,
         "block_number": row.block_number,
@@ -1245,16 +1246,13 @@ async def smart_money_wallets(
         else:
             # Profile metrics are materialized JSON fields. Keep cast/order/
             # limit in PostgreSQL so a large wallet table never enters Python.
-            order_column = func.coalesce(
-                func.cast(
+            order_column = func.cast(
                     WalletSmartMoneySnapshot.profile_json[sort].as_string(),
                     Numeric(38, 18),
-                ),
-                Decimal(0),
             )
         query = query.order_by(
-            order_column.desc(), WalletSmartMoneySnapshot.wallet_address.desc()
-        ).limit(limit)
+            order_column.desc().nulls_last(), WalletSmartMoneySnapshot.wallet_address.desc()
+        ).limit(limit).execution_options(populate_existing=True)
         rows = list((await session.scalars(query)).all())
     wallets = [_wallet_snapshot_payload(row) for row in rows]
     return {"chain": chain, "wallets": wallets, "count": len(wallets)}

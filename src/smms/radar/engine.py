@@ -414,10 +414,10 @@ class RadarEngine:
                 dependencies.append({"kind": snap.__tablename__, "id": snap.id,
                                      "digest": (snap.input_manifest or {}).get("digest"),
                                      "source_epoch": snap.source_epoch})
-            if isinstance(snap, TokenSmartMoneySnapshot) and snap.data_status in {"OK", "DEGRADED"}:
+            if isinstance(snap, TokenSmartMoneySnapshot) and snap.data_status in {"OK", "CHAIN_EVENTS", "DEGRADED"}:
                 f.update(
-                    known_smart_wallet_count=snap.smart_wallet_count,
-                    smart_money_net_flow=str(snap.smart_money_net_flow),
+                    known_smart_wallet_count=snap.smart_wallet_count if snap.smart_wallet_count is not None else UNKNOWN,
+                    smart_money_net_flow=str(snap.smart_money_net_flow) if snap.smart_money_net_flow is not None else UNKNOWN,
                     smart_money_score=str(snap.smart_money_score)
                     if snap.smart_money_score is not None
                     else UNKNOWN,

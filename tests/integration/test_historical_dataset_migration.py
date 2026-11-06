@@ -97,7 +97,7 @@ def test_legacy_dataset_is_preserved_quarantined_and_rebuilt_after_restart(tmp_p
         assert exported["dataset"]["source_epoch"] == 1
         refused = alembic("downgrade", "20261106_0040")
         assert refused.returncode != 0 and "refusing lossy downgrade" in refused.stderr
-        assert "20261106_0042" in alembic("current").stdout
+        assert "20261106_0043" in alembic("current").stdout
     finally:
         engine.dispose()
         try:

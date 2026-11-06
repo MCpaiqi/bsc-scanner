@@ -126,12 +126,17 @@ def _rebuild(session, old):
         from smms.smart_money.aggregation import (
             PROFILE_VERSION,
             SCORE_VERSION,
+            TOKEN_INPUT_POLICY,
+            WALLET_INPUT_POLICY,
             IntelligenceAggregationService,
         )
         from smms.smart_money.early_buyers import EarlyBuyerConfig
 
         if old.score_version != SCORE_VERSION or parameters.get("profile_version", PROFILE_VERSION) != PROFILE_VERSION:
             return "UNSUPPORTED_VERSION"
+        allowed_policies = (None, "canonical-wallet-replay-v1", WALLET_INPUT_POLICY) if isinstance(old, WalletSmartMoneySnapshot) else (None, "canonical-research-v1", TOKEN_INPUT_POLICY)
+        if parameters.get("input_policy") not in allowed_policies:
+            return "UNSUPPORTED_INPUT_POLICY"
         service = IntelligenceAggregationService(
             session, chain=old.chain, score_version=old.score_version,
             profile_version=parameters.get("profile_version", PROFILE_VERSION),

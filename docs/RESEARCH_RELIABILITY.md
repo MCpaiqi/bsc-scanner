@@ -499,3 +499,56 @@ separate gate; schema creation inside regressions does not prove migration parit
   manifest still contained10. These queries lack populate_existing. This remains
   a required R3 fix alongside exact computed-profile/publication-winner binding;
   prior snapshot/Forward passes do not certify wallet aggregation freshness.
+
+## Wallet/token source integrity and USD-v2 (2026-11-06)
+
+- Fixed the concrete retained-identity-map failure in all/full, token-scoped and
+  wallet-scoped aggregation. Trade/Pair rows refresh before replay/manifest reads;
+  epoch fences reject a changed generation without holding the research epoch
+  writer lock. A real two-writer regression preserves the newer canonical winner
+  while the old computation aborts, with no falsely bound token revision.
+- Token aggregation now uses the actual published wallet score/confidence. Epoch,
+  input digest, profile body, score and publication-status mismatches reject the
+  attempted binding. Manifests contain normalized trades and exact scoring inputs
+  in addition to raw source values and wallet snapshot references.
+- Added independent canonical-wallet-usd-v2/canonical-token-usd-v2 input policies.
+  Score-v2 weights and the profile-v1 container remain identified separately. Native
+  amounts, generic quote prices, cached metadata USD amounts and future/cached
+  creation/outcome labels cannot supply canonical USD accounting. Missing valuations
+  use neutral score inputs with valuation-based confidence; exported measurements
+  remain null/UNKNOWN. Known USD cash-flow subtotals do not require matchable inventory.
+- Nullable token counts/flows retain UNKNOWN through ORM storage and API JSON;
+  incomplete sides make net flow unknown, while observed zero stays zero. Unknown
+  ROI sorts last. Repositories/API readers reload persisted JSON. Radar recognizes
+  healthy CHAIN_EVENTS producers and emits UNKNOWN rather than the string "None"
+  for unavailable fields. Raw API trade payloads use dedicated USD values/prices.
+- Migration0043 quarantines unsafe wallet/token recipes and existing transitive
+  consumers without rewriting old values or invalidating unrelated risk recipes.
+  Isolated old0042 data rebuilds through wallet→token→dataset/Radar/Signal/Forward
+  under the corrected policy at original cutoffs. Unsupported input recipes stay
+  explicit; downgrade refuses unknown flows, USD-v2 research or reconstruction work.
+- One fresh read-only reviewer confirmed three material issues: Radar null-string
+  propagation, known cash flow lost when quantity was missing, and non-object
+  auxiliary JSON aborting replay. All received regressions/fixes. Root checks also
+  corrected healthy producer admission, null ROI ordering and retained JSON reads.
+  There was one review/fix pass and no implementer agents.
+- Final backend **688 passed, 28 skipped, 13 existing warnings**; full Ruff(src/tests),
+  whitespace, Compose configuration, Alembic0043 head and offline SQL **1357 lines**
+  passed. Frontend source was unchanged; no prior web result is claimed newly run.
+- Isolated PostgreSQL comprehensive run: **141 passed**, with one old Radar/Signal
+  migration assertion expecting UNKNOWN after a healthy CHAIN_EVENTS reconstruction.
+  Updated that assertion to require canonical token flow10 and its actual published
+  score while retaining LOW confidence; the isolated migration recheck **1 passed**.
+  The two runs jointly verify the selected142 checks on unchanged implementation.
+  The original live tool handle became unavailable after continuation; its process
+  was verified absent and schemas empty before rerunning the full selection with
+  an external verification log. No missing handle or partial output was counted green.
+- Cleanup verified zero owned schemas, then removed the labelled isolated database
+  container/volume. Verification logs, prior temporary environment/lock/offline SQL
+  and existing untracked product/data remain outside the scoped commit.
+- R3 is still OPEN on the final reader/mutation audit. A concrete follow-up in an
+  isolated SQLite API reproduction found POST /api/wallet/replay includes a trade
+  with canonical=False/removed=True in its recurring-wallet output; that query lacks
+  canonical_fact_conditions. Canonical filtering and the adjacent legacy research
+  readers are the next required fixes, rather than treating materialization checks
+  as proof for those endpoints. R6/R7/R9–R14 and the original overall goal stay active.

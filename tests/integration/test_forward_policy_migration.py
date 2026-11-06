@@ -135,7 +135,7 @@ def test_forward_upgrade_preserves_legacy_values_and_refuses_lossy_downgrade():
         assert "refusing lossy downgrade" in refused.stderr
         current = alembic("current")
         assert current.returncode == 0
-        assert "20261106_0042" in current.stdout
+        assert "20261106_0043" in current.stdout
         with scoped.connect() as connection:
             assert connection.execute(text("SELECT count(*) FROM live_signal_outcomes "
                                            "WHERE horizon = '30s'")).scalar_one() == 3

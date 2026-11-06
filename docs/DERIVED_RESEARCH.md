@@ -1,6 +1,6 @@
 # Canonical derived research revisions
 
-Apply migrations through `20261106_0042` before starting updated services. This
+Apply migrations through `20261106_0043` before starting updated services. This
 covers market, risk, wallet/token intelligence, buyers/positions, Radar/Signal, historical datasets and Forward snapshots;
 existing values remain stored as history. R3 still has the scope listed below.
 
@@ -266,10 +266,53 @@ retain their sample_count denominator. Audit-only
 existing snapshot audit URLs expose old observations/outcomes and their manifests.
 Full UI presentation/pagination remains the R9 programme gate.
 
+## Wallet/token USD input policy
+
+0043 preserves old wallet/token values, allows genuine unknown count/flow fields
+to remain SQL NULL, and quarantines prior recipes plus their transitive consumers
+through the durable dependency graph. Unrelated risk/market recipes retain their
+visibility. Repair appends replacements at original cutoffs with preserved admission
+thresholds/window settings; unsupported input policies remain explicitly unavailable.
+Downgrade refuses unknown flows, USD-v2 results or reconstruction work.
+
+`canonical-wallet-usd-v2` and `canonical-token-usd-v2` independently version the
+input/accounting policy. Score-v2 weights and the profile-v1 storage container remain;
+old unsafe calculations are not reproduced by retaining those identifiers. Manifests
+contain raw Trade/Pair values, normalized inputs, actual score inputs and published
+wallet IDs/digests. Every refresh path reloads persisted source values before replay.
+Epoch fences and exact publication-winner checks reject older computations; token
+rollups use the actual published wallet score/confidence rather than a local profile
+with a different source identity. Reader APIs/repositories refresh stored JSON.
+
+Cash flow uses the dedicated normalized TradeEvent.value_usd. Native/quote amounts,
+cached metadata usd_value, generic pool price and cached creation/outcome labels do
+not supply wallet USD evidence. Marks use explicit or derivable USD inputs. Finite,
+nonnegative values are required. Non-object auxiliary metadata is treated as absent
+metadata without discarding otherwise usable normalized facts or crashing replay.
+PairCreated evidence supplies timing; later token cache labels cannot move it.
+
+Unknown costs/quantities/marks do not become measured zero ROI or losses. Profile
+exports expose valued/unvalued counts and KNOWN/DEGRADED/UNKNOWN status; unavailable
+financial measurements are null. Known USD inflow/outflow subtotals are computed
+independently of inventory matching, so missing quantity does not erase known cash.
+Scoring uses documented neutral arithmetic inputs for missing metrics, observed
+subset statistics and valuation coverage in confidence; exact inputs are in lineage.
+Wallet valuation uses the observed trade path; as_of denotes the source cutoff.
+Full-chain history coverage and current-market valuation remain provider/acceptance
+work, rather than inferred from a fresh build timestamp.
+
+Token flow is null when the selected side has missing USD; net flow is null when
+either side is incomplete. An observed zero remains zero. API serialization retains
+nulls, ROI sorting puts unknowns last, and Radar maps unavailable fields to UNKNOWN
+while recognizing healthy CHAIN_EVENTS output. Available count/score evidence is
+retained when other measurements are missing.
+
 ## Remaining programme work
 
-R3 still requires the exact dependency binding of invalid in-flight wallet/token
-computations and its final transitive integrity audit.
+Wallet/token freshness and in-flight binding now have specific regressions. R3
+still requires the final reader/mutation audit: an isolated reproduction found the
+legacy POST /api/wallet/replay query can include removed/noncanonical TradeEvents.
+Its canonical filters and adjacent raw-research readers remain required fixes.
 Supported source mutation must use canonical invalidation; raw SQL audit access
 is separate from trusted current APIs.
 

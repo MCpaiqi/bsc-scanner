@@ -1,5 +1,6 @@
 """Canonical, cutoff-bound early-buyer inputs shared by research and API reads."""
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation, localcontext
@@ -25,7 +26,8 @@ class StaleReplayInputs(ValueError):
 def normalized_amount(row):
     if isinstance(row, TradeEvent) or row.token_amount is None:
         return row.token_amount
-    decimals = (row.metadata_json or {}).get("token_decimals")
+    metadata = row.metadata_json if isinstance(row.metadata_json, Mapping) else {}
+    decimals = metadata.get("token_decimals")
     if isinstance(decimals, bool) or not isinstance(decimals, (int, str)):
         return None
     try:
@@ -41,7 +43,7 @@ def normalized_amount(row):
 
 def usd_price(row):
     """Accounting is in USD; a generic pool quote cannot mark a USD position."""
-    metadata = row.metadata_json or {}
+    metadata = row.metadata_json if isinstance(row.metadata_json, Mapping) else {}
     explicit = row.price_usd if isinstance(row, TradeEvent) else None
     if explicit is None:
         explicit = metadata.get("price_usd")

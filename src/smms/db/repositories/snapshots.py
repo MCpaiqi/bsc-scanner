@@ -36,6 +36,7 @@ class WalletSmartMoneySnapshotRepository:
             )
             .order_by(WalletSmartMoneySnapshot.as_of.desc())
             .limit(1)
+            .execution_options(populate_existing=True)
         )
 
     def list_latest(
@@ -59,7 +60,7 @@ class WalletSmartMoneySnapshotRepository:
                     WalletSmartMoneySnapshot.chain == chain,
                     WalletSmartMoneySnapshot.score_version == score_version,
                     WalletSmartMoneySnapshot.as_of == latest_as_of,
-                )
+                ).execution_options(populate_existing=True)
             ).all()
         )
 
@@ -90,6 +91,7 @@ class TokenSmartMoneySnapshotRepository:
             )
             .order_by(TokenSmartMoneySnapshot.as_of.desc())
             .limit(1)
+            .execution_options(populate_existing=True)
         )
 
     def list_latest_for_tokens(
@@ -123,6 +125,6 @@ class TokenSmartMoneySnapshotRepository:
                         {normalize_address(address, chain=chain) for address in token_addresses}
                     ),
                     TokenSmartMoneySnapshot.as_of == latest_as_of,
-                )
+                ).execution_options(populate_existing=True)
             ).all()
         )
