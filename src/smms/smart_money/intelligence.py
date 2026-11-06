@@ -73,7 +73,7 @@ class TradeEntity:
     token: str
     side: str
     timestamp: datetime
-    value: Decimal = Decimal(0)
+    value: Decimal | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -134,13 +134,20 @@ def _normalise_trades(trades: Iterable[Any], as_of: datetime | None = None) -> l
         ):
             continue
         metadata = _get(row, "metadata_json", _get(row, "metadata", {})) or {}
+        raw_usd = _get(row, "usd_value", _get(row, "value_usd"))
+        try:
+            usd = Decimal(str(raw_usd))
+            if not usd.is_finite() or usd < 0:
+                usd = None
+        except (InvalidOperation, TypeError, ValueError):
+            usd = None
         result.append(
             TradeEntity(
                 wallet,
                 token,
                 side,
                 timestamp,
-                _dec(_get(row, "usd_value", _get(row, "value_usd"))),
+                usd,
                 metadata if isinstance(metadata, Mapping) else {},
             )
         )
@@ -341,7 +348,7 @@ def build_wallet_knowledge_graph(
                 evidence={
                     "token": event.token,
                     "timestamp": event.timestamp.isoformat(),
-                    "value": str(event.value),
+                    "value": str(event.value) if event.value is not None else None,
                 },
             )
         meta = event.metadata
@@ -667,6 +674,8 @@ def smart_money_flow(
     smart_wallets: Iterable[str],
     window: str = "24h",
     as_of: datetime | None = None,
+    unclassified_wallets: Iterable[str] = (),
+    source_truncated: bool = False,
 ) -> dict[str, Any]:
     if window not in FLOW_WINDOWS:
         raise ValueError(f"window must be one of {sorted(FLOW_WINDOWS)}")
@@ -674,26 +683,41 @@ def smart_money_flow(
     start = cutoff - timedelta(seconds=FLOW_WINDOWS[window])
     selected = {w.lower() for w in smart_wallets}
     inflow = outflow = Decimal(0)
-    matched = 0
+    matched = unvalued = 0
+    missing_buy = missing_sell = False
+    unclassified = {wallet.lower() for wallet in unclassified_wallets}
     for event in _normalise_trades(trades, cutoff):
         if event.token != token.lower() or event.wallet not in selected or event.timestamp < start:
             continue
         matched += 1
+        if event.value is None:
+            unvalued += 1
+            missing_buy |= event.side == "BUY"
+            missing_sell |= event.side == "SELL"
+            continue
         if event.side == "BUY":
             inflow += event.value
         else:
             outflow += event.value
-    net = inflow - outflow
+    complete = matched > 0 and not unvalued and not unclassified and not source_truncated
+    net = inflow - outflow if complete else None
+    classification = "DEGRADED" if selected and unclassified else "UNKNOWN" if unclassified else "KNOWN"
     return {
         "token": token,
         "window": window,
         "as_of": cutoff,
-        "inflow": inflow,
-        "outflow": outflow,
+        "inflow": inflow if matched and not missing_buy and not unclassified and not source_truncated else None,
+        "outflow": outflow if matched and not missing_sell and not unclassified and not source_truncated else None,
         "net_flow": net,
-        "accumulation": net > 0,
-        "distribution": net < 0,
-        "data_status": "OBSERVED" if matched else "UNKNOWN",
+        "accumulation": net > 0 if net is not None else None,
+        "distribution": net < 0 if net is not None else None,
+        "known_inflow": inflow,
+        "known_outflow": outflow,
+        "matched_trade_count": matched,
+        "unvalued_trade_count": unvalued,
+        "unclassified_wallet_count": len(unclassified),
+        "classification_status": classification,
+        "data_status": "OBSERVED" if complete else "DEGRADED" if matched else "UNKNOWN",
     }
 
 
@@ -703,9 +727,10 @@ def replay_historical_smart_money(
     *,
     as_of: datetime | None = None,
     entry_window: timedelta = timedelta(hours=24),
+    graph_parameters: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     cutoff = _cutoff(as_of)
-    graph = build_wallet_knowledge_graph(trades, as_of=cutoff)
+    graph = build_wallet_knowledge_graph(trades, as_of=cutoff, **(graph_parameters or {}))
     winners = []
     for token in successful_tokens:
         address = str(_get(token, "address", _get(token, "token_address", ""))).lower()
@@ -740,6 +765,8 @@ def replay_historical_smart_money(
         "recurring_wallets": sorted(appearances, key=lambda w: (-appearances[w], w)),
         "wallet_appearances": dict(appearances),
         "clusters": [c.__dict__ for c in detect_wallet_clusters(graph)],
+        "truncated": graph.truncated,
+        "truncation_reasons": list(graph.truncation_reasons),
     }
 
 

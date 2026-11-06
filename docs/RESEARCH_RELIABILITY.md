@@ -552,3 +552,52 @@ separate gate; schema creation inside regressions does not prove migration parit
   canonical_fact_conditions. Canonical filtering and the adjacent legacy research
   readers are the next required fixes, rather than treating materialization checks
   as proof for those endpoints. R6/R7/R9–R14 and the original overall goal stay active.
+
+## Canonical legacy research readers (2026-11-07)
+
+- Continued R3 with a shared read boundary for wallet replay, graph, clusters,
+  profile/network, token smart-money flow and the BSC market-event list. Canonical
+  flags, JSON reorg markers and known orphan/future PairCreated guards apply in SQL
+  before source limits and wallet-to-token neighborhood discovery. Persisted ORM
+  values are reloaded; orphaned activity cannot discover a neighboring token or
+  consume a replay slot. Empty user cohorts do not read unrelated chain facts.
+- Each request freezes one UTC cutoff and captures its source epoch before reads.
+  Its inline research_provenance contains the exact trade/pair/wallet snapshot
+  values, selected/sentinel IDs, parameters, graph limits and digest. Profile and
+  network use one session/cutoff, with the network cutoff explicit when the selected
+  profile is older. Epoch changes and withdrawn selected wallet snapshots fail
+  closed with HTTP409 REBUILDING after calculation; readers hold no epoch writer
+  lock. PostgreSQL checks use independently committed writer connections.
+- These manifests are ad-hoc response evidence, not durable stored research
+  revisions. Retain the full response for a historical audit. Existing snapshot
+  revision storage/rebuild semantics remain separate; this slice does not claim
+  automatic historical retention or retraction of downloaded API responses.
+- Monetary flow accepts finite nonnegative explicit USD values only, preserves
+  observed zero and exposes missing-value/classification counts. Missing USD makes
+  the affected side and net unknown. Unclassified wallets or a truncated source
+  prevent exact totals and direction claims; known_inflow/outflow are partial
+  subtotals. Latest wallet classification respects the cutoff and current snapshot
+  visibility and is restricted to the bounded flow's participants.
+- User-supplied replay cohorts retain their tokens and empty entrant results and
+  are labeled USER_SUPPLIED_UNVERIFIED. Source and graph clipping are disclosed.
+  One fresh read-only reviewer reproduced a missing graph cluster-cap disclosure:
+  different caps produced different node sets with an identical manifest digest
+  and truncated=False. A failing two-cluster API regression now requires the cap
+  in response-selection provenance and a cluster_node_limit truncation reason.
+- Final isolated PostgreSQL selection: **69 passed**, including two independently
+  committed reconciliation cases, latest-visible snapshot selection, cached-input
+  refresh, HTTP JSON serialization and the cluster-cap regression. The runner uses
+  the project's installed psycopg2 driver and a fresh schema per test. Verified
+  zero owned schemas/connections before removing the labelled test container and
+  its volume. Existing local/untracked product data and verification logs remain.
+- Final full backend run: **713 passed, 30 skipped, 13 existing warnings**. Full
+  Ruff(src/tests) and whitespace checks passed. The two PostgreSQL-only reader
+  concurrency cases skipped in the default run are included in the 69-pass
+  PostgreSQL selection. No frontend implementation or schema migration changed.
+- The user authorized ongoing GitHub synchronization during this batch. Verified
+  commits are pushed to origin/codex/research-integrity; no merge or deployment is
+  part of that instruction.
+- R3 remains OPEN for the final source-reader/mutation audit. Presentation metadata
+  queries and old compatibility paths still need explicit review before closing
+  that requirement. R6/R7 event projection/outbox/SSE, R9/R10 workflows and R11–R14
+  operation/reproducibility/access/Compose acceptance remain active.
