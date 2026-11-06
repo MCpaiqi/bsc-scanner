@@ -8,6 +8,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from smms.db.models import (
+    BacktestDataset,
     EarlyBuyer,
     RadarCandidate,
     RadarFeatureObservation,
@@ -51,7 +52,22 @@ def _repair(session, *, epoch, now, batch_size):
 
 def _rebuild(session, old):
     parameters = (old.input_manifest or {}).get("parameters", {})
-    if isinstance(old, (RadarFeatureObservation, Signal)):
+    if isinstance(old, BacktestDataset):
+        from smms.backtest.dataset import HistoricalDatasetBuilder
+
+        from .dependencies import require_rebuilt_dependencies
+
+        require_rebuilt_dependencies(session, old)
+        if parameters and parameters.get("model_version") != "dataset-v5":
+            return "UNSUPPORTED_VERSION"
+        HistoricalDatasetBuilder(
+            session, chain=old.chain, model_version="dataset-v5",
+            score_version=parameters.get("score_version", "v2"),
+            risk_version=parameters.get("risk_version", "risk-v1"), config=parameters.get("config"),
+            evaluation_as_of=datetime.fromisoformat(parameters["evaluation_as_of"]) if parameters.get("evaluation_as_of") else None,
+        ).materialize(old.period_from, old.period_to, dataset_version=old.dataset_version, commit=False,
+                      reconstruction_policy=parameters.get("reconstruction_policy") if parameters else "legacy-upgrade-to-dataset-v5")
+    elif isinstance(old, (RadarFeatureObservation, Signal)):
         from smms.radar.config import RadarConfig
         from smms.radar.engine import RadarEngine
         from smms.radar.live_signal import LiveSignalService
@@ -189,7 +205,7 @@ def rebuild_due(session, *, now: datetime, batch_size: int = 16) -> int:
                 ]).order_by(model.research_revision.desc()).limit(1)
                     .execution_options(include_invalid_snapshots=True))
                 current = capture_epoch(session)
-                if latest is None or latest.source_epoch != current:
+                if latest is None or latest.source_epoch != current or latest.snapshot_status not in {"VALID", "UNAVAILABLE"}:
                     job.status = "STALE_EPOCH"
                 else:
                     job.status, job.result_id, job.last_error = "COMPLETE", latest.id, None

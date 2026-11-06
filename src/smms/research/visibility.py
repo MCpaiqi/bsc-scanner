@@ -5,6 +5,8 @@ from sqlalchemy.orm import with_loader_criteria
 
 from smms.db.facts import canonical_fact_conditions
 from smms.db.models import (
+    BacktestDataset,
+    BacktestDatasetRow,
     EarlyBuyer,
     RadarFeatureObservation,
     ResearchState,
@@ -17,7 +19,7 @@ from smms.db.models import (
 )
 
 SNAPSHOT_MODELS = (TokenMarketSnapshot, TokenRiskSnapshot, TokenSmartMoneySnapshot, WalletSmartMoneySnapshot,
-                   EarlyBuyer, WalletTokenPosition, RadarFeatureObservation, Signal)
+                   EarlyBuyer, WalletTokenPosition, RadarFeatureObservation, Signal, BacktestDataset)
 
 
 def visible_conditions(model):
@@ -41,4 +43,6 @@ def apply_snapshot_visibility(execute_state):
         execute_state.statement = execute_state.statement.options(*[
             with_loader_criteria(model, and_(*visible_conditions(model)), include_aliases=True)
             for model in SNAPSHOT_MODELS
-        ])
+        ], with_loader_criteria(BacktestDatasetRow, select(BacktestDataset.id).where(
+            BacktestDataset.id == BacktestDatasetRow.dataset_id, *visible_conditions(BacktestDataset),
+        ).exists(), include_aliases=True))

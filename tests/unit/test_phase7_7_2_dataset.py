@@ -28,7 +28,7 @@ def _session() -> Session:
 def _token(session: Session, address: str, outcome: str) -> None:
     session.add(Token(address=address, chain="bsc", creation_timestamp=T0, outcome_class=outcome))
     session.add(Pair(chain_id=56, address=f"pair-{address}", token0_address=address, token1_address="wbnb", creation_timestamp=T0))
-    session.add(TradeEvent(chain="bsc", token_address=address, trader_address="wallet", tx_hash=f"tx-{address}", timestamp=T0, side="BUY", price=Decimal(1), market_cap=1000, liquidity=500, source="fixture"))
+    session.add(TradeEvent(chain="bsc", token_address=address, trader_address="wallet", tx_hash=f"tx-{address}", timestamp=T0, side="BUY", price=Decimal(1), price_usd=Decimal(1), pair_address=f"pair-{address}", market_cap=1000, liquidity=500, source="fixture"))
 
 
 def test_survivorship_bias_keeps_all_tokens_in_original_universe() -> None:
@@ -47,8 +47,8 @@ def test_future_facts_cannot_contaminate_a_past_row() -> None:
     with _session() as session:
         _token(session, "token", "RUG")
         session.add_all([
-            MarketEvent(chain_id=56, event_type="SWAP", token_address="token", tx_hash="market-now", timestamp=T0, price=1, usd_value=10, source="fixture"),
-            MarketEvent(chain_id=56, event_type="SWAP", token_address="token", tx_hash="market-future", timestamp=T0 + timedelta(minutes=1), price=99, usd_value=999, source="fixture"),
+            MarketEvent(chain_id=56, event_type="SWAP", token_address="token", tx_hash="market-now", timestamp=T0, price=1, usd_value=10, pair_address="pair-token", metadata_json={"price_basis": "USD"}, source="fixture"),
+            MarketEvent(chain_id=56, event_type="SWAP", token_address="token", tx_hash="market-future", timestamp=T0 + timedelta(minutes=1), price=99, usd_value=999, pair_address="pair-token", metadata_json={"price_basis": "USD"}, source="fixture"),
             TokenSmartMoneySnapshot(chain="bsc", token_address="token", smart_wallet_count=1, smart_money_buy_usd=10, smart_money_sell_usd=0, smart_money_net_flow=10, early_smart_buy_count=1, smart_money_score=10, confidence="LOW", confidence_score=20, data_status="OK", as_of=T0, score_version="v2"),
             TokenSmartMoneySnapshot(chain="bsc", token_address="token", smart_wallet_count=99, smart_money_buy_usd=999, smart_money_sell_usd=0, smart_money_net_flow=999, early_smart_buy_count=99, smart_money_score=99, confidence="HIGH", confidence_score=99, data_status="OK", as_of=T0 + timedelta(seconds=1), score_version="v2"),
             TokenRiskSnapshot(chain="bsc", token_address="token", contract_risk="LOW", liquidity_risk="LOW", holder_risk="LOW", behavior_risk="LOW", overall_risk="LOW", confidence="HIGH", evidence_json=[], dimensions_json={}, as_of=T0, risk_version="risk-v1"),
@@ -61,11 +61,11 @@ def test_future_facts_cannot_contaminate_a_past_row() -> None:
         rows, _ = HistoricalDatasetBuilder(session).build(T0, T0)
         row = rows[0]
 
-        assert row.market["price"] == "1.000000000000000000"
+        assert row.market["price"] == "1"
         assert row.smart_money["score"] == Decimal("10.00")
         assert row.risk["level"] == "LOW"
         assert row.early_buyer["count"] == 1
-        assert any(price["price"] == "99.000000000000000000" for price in row.evaluation_price_path)
+        assert any(price["price"] == "99" for price in row.evaluation_price_path)
 
 
 def test_materialized_dataset_contains_reproducibility_metadata() -> None:

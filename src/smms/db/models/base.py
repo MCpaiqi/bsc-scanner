@@ -22,11 +22,15 @@ def _research_visibility(execute_state):
 
 @event.listens_for(Session, "before_flush")
 def _immutable_research_inputs(session, _context, _instances):
+    from .entities import BacktestDataset, BacktestDatasetRow
     from .research import SnapshotLineageMixin
     from .runtime import EvidenceObservationRecord
 
+    if any(isinstance(row, (BacktestDataset, BacktestDatasetRow)) for row in session.deleted):
+        raise ValueError("published dataset artifacts are immutable; retain audit history")
+
     for row in session.dirty:
-        if isinstance(row, EvidenceObservationRecord) and session.is_modified(row, include_collections=False):
+        if isinstance(row, (EvidenceObservationRecord, BacktestDatasetRow)) and session.is_modified(row, include_collections=False):
             raise ValueError("stored evidence observations are immutable; append a new observation")
         if isinstance(row, SnapshotLineageMixin):
             state = inspect(row)

@@ -17,7 +17,7 @@ explicit UNKNOWN states. Preserve existing local data and untracked source.
   features, outcomes or newly aggregated risk; genuine losers remain in the universe.
 - [x] R4: Alpha negatives require complete horizon coverage; missing coverage stays
   UNKNOWN; pending work survives downtime; result versions and denominators are explicit.
-- [ ] R5: forward endpoints respect a bounded time tolerance and canonical facts;
+- [x] R5: forward endpoints respect a bounded time tolerance and canonical facts;
   drawdown uses price / running peak - 1; historical and live evaluation agree.
 - [ ] R6: normal and deferred candidate projections have equivalent audit/baseline/
   rule effects; event fanout happens after commit and survives retry without ghosts.
@@ -387,3 +387,53 @@ separate gate; schema creation inside regressions does not prove migration parit
   clean-checkout delivery, access control and full Compose/provider acceptance remain
   R11–R14. The additional acceptance evidence above is retained. The full original
   objective and R3/R5/R6/R7/R9–R14 are still OPEN; this slice is not programme completion.
+
+## Historical datasets and evaluation availability (2026-11-06)
+
+- Continued R3 with BacktestDataset under the shared epoch/revision/immutable
+  manifest/publication/dependency contract. Rows inherit current-parent visibility.
+  Canonical invalidation and same-epoch source supersession withhold prior datasets;
+  bounded durable repair waits for prerequisites and appends replacement study
+  revisions. Stable labels resolve current data while old IDs remain audit-only.
+- Dataset-v5 removes generic quote prices, mixed-pair outcomes and unversioned
+  TokenScore features. It shares the Forward USD loader and 30-second entry
+  selector, freezes the entry pair, includes the five-second 24h endpoint buffer,
+  and preserves stable source references during historical path evaluation.
+  Unproven launchpad cache labels cannot admit a token. Legitimate losers without
+  usable USD entry prices remain represented as UNKNOWN.
+- R5 is rechecked after extraction-to-evaluation public-path regressions prove
+  quote/USD separation, frozen pairs, canonical input filtering, endpoint tolerance,
+  true drawdown and equal-time source ties. Historical/live comparisons now freeze
+  the same evaluation_as_of. Receipt observed_at/as_of and signal-time availability
+  are checked separately; late receipts are accepted only at a sufficiently late
+  evaluation cutoff. Reconstruction preserves the recorded cutoff.
+- Migration0041 preserves/quarantines actual legacy metadata and payloads. Missing
+  recipes explicitly use legacy-upgrade-to-dataset-v5 without claiming the unknown
+  former extraction recovered. Unsupported recipes remain unavailable; new work
+  prevents lossy downgrade. No real database/provider or production migration ran.
+- Backtest API/CLI loaders reject stale datasets and recheck after calculation.
+  API returns 409/REBUILDING plus audit URL; a bounded audit-only dataset rows
+  endpoint retains old payloads. Trusted reads refresh persisted values and copy
+  JSON. Source identity accompanies current CLI JSON/CSV exports; imported files
+  are explicitly UNVERIFIED with content digest rather than certified current.
+- One fresh read-only reviewer independently reproduced two material defects:
+  late-receipt cutoff mismatch and mutable nested JSON cache reads. Both received
+  regression coverage and fixes in one material fix pass. No second review or
+  implementer agents were used. Known parameters, transaction rollback, concurrent
+  publication convergence and old/new value preservation are exercised.
+- Verification at final implementation: backend **650 passed, 22 skipped, 13
+  existing warnings**. Initial database suite **121 passed**; final PostgreSQL
+  dataset/migration/API/CLI/concurrency suite **24 passed** after review fixes.
+  Ruff, whitespace, Compose config, Alembic0041 head and offline upgrade SQL
+  (**1295 lines**) passed. Frontend source was unchanged in this slice; prior web
+  results are not represented as newly run here.
+- Remaining R3 work: existing Forward observation/outcome revision and dependency
+  recovery, plus invalid in-flight wallet/token dependency binding. R6/R7/R9–R14
+  remain OPEN, including durable after-commit effects, SSE, complete UI freshness,
+  dense-history bounds, clean-checkout closure, access controls, full topology and
+  real-provider/risk-field compatibility. The overall goal remains ACTIVE.
+- Cleanup audit verified zero test-owned schemas and removed the labelled isolated
+  PostgreSQL container/volume. Automatic approval rejected the combined recursive
+  temporary-environment cleanup with "blocked by policy" and no detailed reason;
+  generated .venv/uv.lock/offline SQL remain outside the scoped commit. Existing
+  untracked product/data files are preserved.

@@ -230,14 +230,15 @@ def _tol(name: str, tolerance: timedelta | Mapping[str, timedelta] | None) -> ti
     if isinstance(tolerance, Mapping): return tolerance.get(name, timedelta(0))
     return tolerance if isinstance(tolerance, timedelta) else timedelta(seconds=5)
 
-def evaluate_signal(signal: TokenSignal, prices: Iterable[Any], *, rug_threshold: Decimal = Decimal("-0.90"), coverage_tolerance: timedelta | Mapping[str, timedelta] | None = None) -> tuple[Evaluation, ...]:
-    points = [PricePoint(timestamp, _get(row, "price")) for row in prices
+def evaluate_signal(signal: TokenSignal, prices: Iterable[Any], *, rug_threshold: Decimal = Decimal("-0.90"), coverage_tolerance: timedelta | Mapping[str, timedelta] | None = None, at: datetime | None = None) -> tuple[Evaluation, ...]:
+    points = [PricePoint(timestamp, _get(row, "price"), _get(row, "reference", ""),
+                         _get(row, "provenance")) for row in prices
               if (timestamp := _observation_time(row)) is not None]
     out = []
     for name, delta in HORIZONS:
         result = evaluate_price_path(
             signal.entry_price, signal.timestamp, points, horizon=delta,
-            tolerance=_tol(name, coverage_tolerance),
+            tolerance=_tol(name, coverage_tolerance), at=at,
         )
         if result is None:
             out.append(Evaluation(name, None, None, None, False,
@@ -279,7 +280,7 @@ def run_backtest(rows: Iterable[Mapping[str,Any]], *, strategy: str = "composite
         signal=generate_signal(row["token"],_dt(row["timestamp"]),market=row.get("market"),smart_money=row.get("smart_money"),early_buyers=row.get("early_buyers",()),risk=row.get("risk"),feature_price_history=FeaturePriceHistory.from_observations(row.get("feature_price_history", row.get("prices", ())), _dt(row["timestamp"])),threshold=threshold,model_version=model_version,config_version=config_version,strategy=strategy,weights=weights,max_entry_price_age_seconds=max_entry_price_age_seconds,interesting_eligible=interesting_eligible); identity=(signal.token.lower(),signal.timestamp,strategy)
         if identity in seen: continue
         seen.add(identity); signals.append(signal)
-        if signal.entry_eligible: evaluations.extend(evaluate_signal(signal,row.get("evaluation_price_path", row.get("future_prices", row.get("prices", ()))),coverage_tolerance=coverage_tolerance))
+        if signal.entry_eligible: evaluations.extend(evaluate_signal(signal,row.get("evaluation_price_path", row.get("future_prices", row.get("prices", ()))),coverage_tolerance=coverage_tolerance,at=_dt(row["evaluation_as_of"]) if row.get("evaluation_as_of") else None))
     status="DEGRADED" if any(s.data_status!="OK" for s in signals) else "OK"; summary=summarize(evaluations,capital=capital,unique_signal_count=len(signals),strategy=strategy,model_version=model_version,data_status=status); return BacktestResult(strategy,model_version,summary["status"],tuple(signals),tuple(evaluations),summary)
 
 def baseline_comparison(rows: Iterable[Mapping[str,Any]], *, threshold: Decimal = Decimal(50), capital: Decimal = Decimal(1000), model_version: str = "signal-v1") -> dict[str,Any]:

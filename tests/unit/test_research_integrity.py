@@ -64,7 +64,7 @@ def seed_market(session):
         Pair(chain_id=56, address="research-pair", token0_address="research-token",
              token1_address="quote", creation_timestamp=T0),
         TradeEvent(chain="bsc", token_address="research-token", trader_address="buyer",
-                   tx_hash="entry", timestamp=T0, side="BUY", price=1,
+                   tx_hash="entry", timestamp=T0, side="BUY", price=1, price_usd=1, pair_address="research-pair",
                    liquidity=100_000, source="fixture"),
     ])
     session.flush()
@@ -321,12 +321,12 @@ def test_orphan_trades_do_not_enter_features_or_future_prices(
         research_session.add(TradeEvent(
             chain="bsc", token_address="research-token", trader_address="orphan-buyer",
             tx_hash=f"orphan-{seconds}", timestamp=T0 + timedelta(seconds=seconds),
-            side="BUY", price=99, source="fixture", canonical=canonical, removed=removed,
+            side="BUY", price=99, price_usd=99, pair_address="research-pair", source="fixture", canonical=canonical, removed=removed,
         ))
     research_session.add(TradeEvent(
         chain="bsc", token_address="research-token", trader_address="valid-buyer",
         tx_hash="valid-future", timestamp=T0 + timedelta(seconds=30),
-        side="BUY", price=2, source="fixture",
+        side="BUY", price=2, price_usd=2, pair_address="research-pair", source="fixture",
     ))
     research_session.flush()
 
@@ -346,7 +346,7 @@ def test_orphan_market_metadata_does_not_enter_price_paths(research_session, mar
         research_session.add(MarketEvent(
             chain_id=56, event_type="TRADE", token_address="research-token",
             tx_hash=f"orphan-market-{seconds}", timestamp=T0 + timedelta(seconds=seconds),
-            price=99, source="fixture", metadata_json=marker,
+            price=99, pair_address="research-pair", source="fixture", metadata_json={**marker, "price_basis": "USD"},
         ))
     research_session.flush()
 
@@ -364,6 +364,7 @@ def test_orphan_lifecycle_cannot_migrate_a_valid_launchpad_token(research_sessio
     research_session.add(Token(
         chain="bsc", address="launch-token", launchpad="flap", first_seen_at=T0,
     ))
+    research_session.add(TokenLifecycleEvent(chain="bsc", token_address="launch-token", launchpad="flap", event_type="CREATED", timestamp=T0, tx_hash="canonical-created"))
     research_session.add(TokenLifecycleEvent(
         chain="bsc", token_address="launch-token", launchpad="flap",
         event_type="MIGRATED", timestamp=T0 + timedelta(seconds=10),
@@ -399,6 +400,7 @@ def test_orphan_launchpad_trade_cannot_add_lifecycle_or_price(research_session, 
     research_session.add(Token(
         chain="bsc", address="launch-token", launchpad="flap", first_seen_at=T0,
     ))
+    research_session.add(TokenLifecycleEvent(chain="bsc", token_address="launch-token", launchpad="flap", event_type="CREATED", timestamp=T0, tx_hash="canonical-created"))
     research_session.add(TradeEvent(
         chain="bsc", token_address="launch-token", launchpad="flap",
         trader_address="orphan", tx_hash="orphan-launch-trade", side="BUY", price=99,
@@ -423,7 +425,7 @@ def test_unmarked_or_explicitly_valid_market_fact_is_retained(research_session, 
     research_session.add(MarketEvent(
         chain_id=56, event_type="TRADE", token_address="research-token",
         tx_hash="valid-market", timestamp=T0 + timedelta(seconds=10), price=2,
-        source="fixture", metadata_json=metadata,
+        source="fixture", pair_address="research-pair", metadata_json={**metadata, "price_basis": "USD"},
     ))
     research_session.flush()
 
@@ -459,10 +461,11 @@ def test_orphan_created_event_cannot_admit_token_via_cached_fields(research_sess
     assert report.tokens_eligible == 0
 
 
-def test_future_creation_evidence_does_not_erase_legacy_discovery(research_session):
+def test_future_creation_evidence_does_not_erase_canonical_discovery(research_session):
     research_session.add(Token(
         chain="bsc", address="legacy-launch", launchpad="flap", first_seen_at=T0,
     ))
+    research_session.add(TokenLifecycleEvent(chain="bsc", token_address="legacy-launch", launchpad="flap", event_type="CREATED", timestamp=T0, tx_hash="canonical-created"))
     research_session.flush()
     before, _ = HistoricalDatasetBuilder(research_session).build(T0, T0)
     research_session.add(TokenLifecycleEvent(

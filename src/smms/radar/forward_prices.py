@@ -1,7 +1,7 @@
 """Read explicit USD evidence, preserving pair identity and event-time cutoffs."""
 
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
@@ -9,6 +9,18 @@ from sqlalchemy.orm import Session
 from smms.db.facts import canonical_fact_conditions
 from smms.db.models import MarketEvent, Pair, TokenMarketSnapshot, TradeEvent
 from smms.evaluation import PricePoint, positive_price, utc
+
+ENTRY_MAX_AGE = timedelta(seconds=30)
+
+
+def select_entry_price(prices, *, at):
+    """Use one deterministic, already observable USD entry for both researchers."""
+    at = utc(at)
+    entries = [p for p in prices if at - ENTRY_MAX_AGE <= p.timestamp <= at
+               and (not (p.provenance or {}).get("as_of")
+                    or utc(datetime.fromisoformat(p.provenance["as_of"])) <= at)]
+    latest = max((p.timestamp for p in entries), default=None)
+    return min((p for p in entries if p.timestamp == latest), key=lambda p: p.reference, default=None)
 
 
 def load_usd_prices(
@@ -58,7 +70,7 @@ def load_usd_prices(
             query = query.where(model.status == "KNOWN", model.as_of <= as_of)
         if model is MarketEvent:
             query = query.where(model.metadata_json["price_basis"].as_string() == "USD")
-        for row in session.scalars(query.order_by(time_column, model.id)):
+        for row in session.scalars(query.order_by(time_column, model.id).execution_options(populate_existing=True)):
             value = positive_price(getattr(row, price_column.key))
             if value is None:
                 continue
@@ -73,6 +85,7 @@ def load_usd_prices(
                     as_of=utc(row.as_of).isoformat(),
                     liquidity_usd=str(row.liquidity_usd) if row.liquidity_usd is not None else None,
                     market_cap_usd=str(row.market_cap_usd) if row.market_cap_usd is not None else None,
+                    input_digest=(row.input_manifest or {}).get("digest"),
                 )
             result[row.token_address].append(PricePoint(
                 timestamp, value, f"{priority}:{model.__name__}:{row.id:020d}", provenance,

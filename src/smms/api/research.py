@@ -5,11 +5,37 @@ from sqlalchemy import select
 
 from smms.config.settings import get_settings
 from smms.db.database import session_scope
-from smms.db.models import ResearchEpoch, ResearchRebuildJob, ResearchState
+from smms.db.models import (
+    BacktestDataset,
+    BacktestDatasetRow,
+    ResearchEpoch,
+    ResearchRebuildJob,
+    ResearchState,
+)
 from smms.research.lineage import row_values
 from smms.research.publication import MODELS
 
 router = APIRouter(prefix="/api/research", tags=["research-audit"])
+
+
+@router.get("/datasets/{dataset_id}/rows")
+async def dataset_audit_rows(dataset_id: int, limit: int = Query(50, ge=1, le=200),
+                             before_id: int | None = Query(None, ge=1)):
+    query = select(BacktestDatasetRow).where(BacktestDatasetRow.dataset_id == dataset_id)
+    if before_id is not None:
+        query = query.where(BacktestDatasetRow.id < before_id)
+    async with session_scope(get_settings()) as session:
+        dataset = await session.scalar(select(BacktestDataset.id).where(
+            BacktestDataset.id == dataset_id, BacktestDataset.chain == "bsc",
+        ).execution_options(include_invalid_snapshots=True))
+        if dataset is None:
+            raise HTTPException(404, "research dataset not found")
+        rows = (await session.scalars(query.order_by(BacktestDatasetRow.id.desc()).limit(limit + 1)
+                                      .execution_options(include_invalid_snapshots=True))).all()
+    return {"audit_only": True, "dataset_id": dataset_id,
+            "lineage_url": f"/api/research/snapshots/backtest_datasets/{dataset_id}",
+            "rows": [row_values(row) for row in rows[:limit]],
+            "next_cursor": rows[limit - 1].id if len(rows) > limit else None}
 
 
 @router.get("/snapshots/{kind}/{snapshot_id}")

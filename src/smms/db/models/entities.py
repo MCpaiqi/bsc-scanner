@@ -668,13 +668,14 @@ class Signal(SnapshotLineageMixin, Base):
     token: Mapped[Token] = relationship(back_populates="signals")
 
 
-class BacktestDataset(Base):
+class BacktestDataset(SnapshotLineageMixin, Base):
     """Immutable build metadata for a reproducible historical dataset."""
 
     __tablename__ = "backtest_datasets"
     __table_args__ = (
-        UniqueConstraint("dataset_version", name="uq_backtest_datasets_version"),
+        UniqueConstraint("chain", "dataset_version", "research_revision", name="uq_backtest_datasets_version"),
         Index("ix_backtest_datasets_period", "chain", "period_from", "period_to"),
+        Index("ix_backtest_datasets_rebuild", "chain", "source_epoch", "snapshot_status", "id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

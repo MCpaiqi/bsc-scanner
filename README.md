@@ -24,7 +24,7 @@ uvicorn smms.api.app:app --reload
 
 打开 `http://127.0.0.1:8080/` 即可使用 React Trader Workstation。`/` 默认是工作台，旧版静态页面仅保留在 `/legacy`。标准 Compose 拓扑会同时启动 API、Web、BSC ingestion、Radar audit、Forward outcome、Alpha coverage 和研究快照重建 workers，以及 PostgreSQL、Redis。
 
-当前服务启动前需完成 `20261106_0040` 迁移。Alpha coverage worker 使用确认后的 HTTP 区块扫描证明数据覆盖；缺证据的目标结果保持 UNKNOWN。当前评分版本为 `experimental-v3`，详见 [覆盖与恢复口径](docs/ALPHA_COVERAGE.md)。失效的 Alpha 输入会保留历史并自动创建替代修订，可查询 [来源和重建记录](docs/ALPHA_RECONSTRUCTION.md)。市场、风险、钱包/Token 聪明钱、早期买家、持仓、Radar 和 Signal 快照会隐藏失效版本并在后台生成新修订；历史买家提取已升级为 `dataset-v4`，详见 [派生研究来源与恢复](docs/DERIVED_RESEARCH.md)。
+当前服务启动前需完成 `20261106_0041` 迁移。Alpha coverage worker 使用确认后的 HTTP 区块扫描证明数据覆盖；缺证据的目标结果保持 UNKNOWN。当前评分版本为 `experimental-v3`，详见 [覆盖与恢复口径](docs/ALPHA_COVERAGE.md)。失效的 Alpha 输入会保留历史并自动创建替代修订，可查询 [来源和重建记录](docs/ALPHA_RECONSTRUCTION.md)。市场、风险、钱包/Token 聪明钱、早期买家、持仓、Radar、Signal 和物化历史数据集会隐藏失效版本并在后台生成新修订；历史提取已升级为 `dataset-v5`，详见 [派生研究来源与恢复](docs/DERIVED_RESEARCH.md)。
 
 无外网时可打开 `http://127.0.0.1:8000/?demo=1` 预览完整卡片交互。该模式只在显式指定时启用，页面会持续标明数据为演示数据，不会在真实行情失败时自动顶替。
 
@@ -84,7 +84,9 @@ Production Radar 诊断见 [Phase 7.9.3 实现说明](PHASE_7_9_3_IMPLEMENTATION
 Historical universe 依据当时可观察的生命周期构建。Launchpad Token 无需等待 DEX Pair；
 DEX-only Token 从有时间戳的 Pair 创建事实开始进入 universe。未来 Pair 或 migration 不回填过去状态。
 数据集将 `feature_price_history`（≤ as_of）与 `evaluation_price_path`（> as_of）分开。
-旧数据集应重建以获得修正后的 universe；旧 prices 格式仍在回测边界兼容。
+`dataset-v5` 与实时 Forward 共用美元入场价格，固定入场交易对，并记录评估可用时刻；缺少报价保留 UNKNOWN。
+旧物化数据集经迁移隔离后自动重建，原值保留供审计；失效 ID 的回测接口返回 409 / REBUILDING。
+本地文件导入仍兼容旧 prices 格式，导出会标注尚未验证当前链数据。
 
 开发与 CI 使用同一个入口（Python 3.12+，建议先激活虚拟环境）：
 

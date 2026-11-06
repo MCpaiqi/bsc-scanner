@@ -115,17 +115,33 @@ async def stop_runtime_subscribers() -> None:
 async def _dataset_or_404(
     dataset_id: int, session
 ) -> tuple[BacktestDataset, list[dict[str, object]]]:
-    dataset = await session.get(BacktestDataset, dataset_id)
+    dataset = await session.scalar(select(BacktestDataset).where(
+        BacktestDataset.id == dataset_id, BacktestDataset.chain == "bsc",
+    ).execution_options(include_invalid_snapshots=True, populate_existing=True))
     if dataset is None:
         raise HTTPException(status_code=404, detail="backtest dataset not found")
+    await _assert_dataset_current(session, dataset_id)
     records = (
         await session.scalars(
             select(BacktestDatasetRow)
             .where(BacktestDatasetRow.dataset_id == dataset.id)
             .order_by(BacktestDatasetRow.signal_timestamp)
+            .execution_options(populate_existing=True)
         )
     ).all()
-    return dataset, [record.payload_json for record in records]
+    await _assert_dataset_current(session, dataset_id)
+    from copy import deepcopy
+
+    return dataset, [deepcopy(record.payload_json) for record in records]
+
+
+async def _assert_dataset_current(session, dataset_id):
+    current = await session.scalar(select(BacktestDataset.id).where(BacktestDataset.id == dataset_id))
+    if current is None:
+        raise HTTPException(status_code=409, detail={
+            "status": "REBUILDING", "reason": "DATASET_INVALIDATED", "dataset_id": dataset_id,
+            "lineage_url": f"/api/research/snapshots/backtest_datasets/{dataset_id}",
+        })
 
 
 def _trade_payload(row: TradeEvent) -> dict[str, object]:
@@ -532,24 +548,24 @@ async def backtest_summary(
     settings = get_settings()
     async with session_scope(settings) as session:
         dataset = await session.scalar(
-            select(BacktestDataset).order_by(BacktestDataset.build_timestamp.desc())
+            select(BacktestDataset).where(BacktestDataset.chain == "bsc")
+            .order_by(BacktestDataset.build_timestamp.desc(), BacktestDataset.id.desc()).limit(1)
+            .execution_options(include_invalid_snapshots=True)
         )
         if dataset is None:
             return {"status": "INSUFFICIENT_DATA", "datasets": []}
-        records = (
-            await session.scalars(
-                select(BacktestDatasetRow).where(BacktestDatasetRow.dataset_id == dataset.id)
-            )
-        ).all()
+        dataset, rows = await _dataset_or_404(dataset.id, session)
         result = run_backtest(
-            [record.payload_json for record in records], strategy=strategy, threshold=threshold
+            rows, strategy=strategy, threshold=threshold
         )
+        await _assert_dataset_current(session, dataset.id)
     return result.summary | {
         "status": result.status,
         "strategy": strategy,
         "model_version": result.model_version,
         "dataset_id": dataset.id,
         "dataset_version": dataset.dataset_version,
+        **_snapshot_provenance(dataset),
     }
 
 
@@ -560,7 +576,9 @@ async def backtest_signals(
     settings = get_settings()
     async with session_scope(settings) as session:
         dataset = await session.scalar(
-            select(BacktestDataset).order_by(BacktestDataset.build_timestamp.desc())
+            select(BacktestDataset).where(BacktestDataset.chain == "bsc")
+            .order_by(BacktestDataset.build_timestamp.desc(), BacktestDataset.id.desc()).limit(1)
+            .execution_options(include_invalid_snapshots=True)
         )
         if dataset is None:
             return {
@@ -569,17 +587,15 @@ async def backtest_signals(
                 "signals": [],
                 "count": 0,
             }
-        records = (
-            await session.scalars(
-                select(BacktestDatasetRow).where(BacktestDatasetRow.dataset_id == dataset.id)
-            )
-        ).all()
-    result = run_backtest([record.payload_json for record in records], strategy=strategy)
+        dataset, rows = await _dataset_or_404(dataset.id, session)
+        result = run_backtest(rows, strategy=strategy)
+        await _assert_dataset_current(session, dataset.id)
     return {
         "status": result.status,
         "model_version": result.model_version,
         "dataset_id": dataset.id,
         "dataset_version": dataset.dataset_version,
+        **_snapshot_provenance(dataset),
         "signals": [signal.as_dict() for signal in result.signals[-limit:]],
         "count": len(result.signals),
     }
@@ -601,6 +617,7 @@ async def backtest_datasets(limit: int = Query(50, ge=1, le=200)) -> dict[str, o
             {
                 "id": row.id,
                 "dataset_version": row.dataset_version,
+                **_snapshot_provenance(row),
                 "chain": row.chain,
                 "from": row.period_from,
                 "to": row.period_to,
@@ -621,11 +638,13 @@ async def backtest_dataset_summary(
     settings = get_settings()
     async with session_scope(settings) as session:
         dataset, rows = await _dataset_or_404(dataset_id, session)
-    result = run_backtest(rows, strategy=strategy, threshold=threshold)
+        result = run_backtest(rows, strategy=strategy, threshold=threshold)
+        await _assert_dataset_current(session, dataset.id)
     return result.summary | {
         "status": result.status,
         "dataset_id": dataset.id,
         "dataset_version": dataset.dataset_version,
+        **_snapshot_provenance(dataset),
         "coverage": dataset.source_coverage_json,
         "report": dataset.report_json,
     }
@@ -638,12 +657,14 @@ async def backtest_dataset_signals(
     settings = get_settings()
     async with session_scope(settings) as session:
         dataset, rows = await _dataset_or_404(dataset_id, session)
-    result = run_backtest(rows, strategy=strategy)
+        result = run_backtest(rows, strategy=strategy)
+        await _assert_dataset_current(session, dataset.id)
     return {
         "status": result.status,
         "model_version": result.model_version,
         "dataset_id": dataset.id,
         "dataset_version": dataset.dataset_version,
+        **_snapshot_provenance(dataset),
         "signals": [signal.as_dict() for signal in result.signals[-limit:]],
         "count": len(result.signals),
     }

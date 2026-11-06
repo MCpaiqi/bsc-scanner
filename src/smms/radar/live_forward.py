@@ -26,13 +26,12 @@ from smms.evaluation import (
     evaluate_price_path,
     positive_price,
 )
-from smms.radar.forward_prices import load_usd_prices
+from smms.radar.forward_prices import ENTRY_MAX_AGE, load_usd_prices, select_entry_price
 from smms.research.state import capture_epoch
 from smms.research.visibility import is_current_snapshot
 
 HORIZONS = (("30s", 30), ("1m", 60), ("5m", 300), ("15m", 900), ("30m", 1800), ("1h", 3600), ("4h", 14400), ("24h", 86400))
 OBSERVED_CLASSES = {"WATCH", "INTERESTING", "HIGH_SIGNAL", "REJECTED", "MARKET_BASELINE"}
-ENTRY_MAX_AGE = timedelta(seconds=30)
 RETRY_INTERVAL = timedelta(seconds=60)
 
 
@@ -104,9 +103,7 @@ def record_observation(
     entries = load_usd_prices(
         session, [(token.address, observed_at - ENTRY_MAX_AGE, observed_at)], as_of=observed_at,
     ).get(token.address, [])
-    latest_time = max((p.timestamp for p in entries), default=None)
-    entry = min((p for p in entries if p.timestamp == latest_time),
-                key=lambda p: p.reference, default=None)
+    entry = select_entry_price(entries, at=observed_at)
     price = entry.price if entry else None
     entry_source = dict(entry.provenance) if entry else None
     snapshot = {

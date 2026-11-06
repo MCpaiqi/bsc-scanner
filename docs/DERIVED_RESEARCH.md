@@ -1,7 +1,7 @@
 # Canonical derived research revisions
 
-Apply migrations through `20261106_0040` before starting updated services. This
-covers market, risk, wallet/token intelligence, buyers/positions and Radar/Signal snapshots;
+Apply migrations through `20261106_0041` before starting updated services. This
+covers market, risk, wallet/token intelligence, buyers/positions, Radar/Signal and historical dataset snapshots;
 existing values remain stored as history. R3 still has the scope listed below.
 
 ## Visibility and history
@@ -73,7 +73,7 @@ revisions, invalidations or rebuild work exist.
 
 ## Early buyers and positions
 
-Historical dataset recipe `dataset-v4`, Radar features/signals and the early-buyer
+Historical dataset recipe `dataset-v5`, Radar features/signals and the early-buyer
 API replay the same canonical facts at a specified cutoff. Cached EarlyBuyer rows
 cannot supply historical evidence. The adapter requires canonical Pair creation
 at/before cutoff, applies flags/JSON/parent-pair guards, merges trade/market-only
@@ -175,10 +175,53 @@ provenance, freshness and availability timestamps. Risk rechecks resolved chain
 observations at its own epoch. Stored evidence is immutable. Live provider collection
 uses completion time; explicit historical cutoffs never admit later responses.
 
+## Historical datasets and backtests
+
+`dataset-v5` reads the same explicit USD sources and deterministic 30-second entry
+selector as live Forward: TradeEvent.price_usd, known TokenMarketSnapshot.price_usd,
+or MarketEvent.price explicitly labelled USD. Generic pool quotes and unversioned
+TokenScore caches cannot supply historical features. Activity scores replay
+canonical five-minute buy/sell counts. Market cap/liquidity require explicitly USD
+snapshot fields; absent units remain unknown. Missing prices do not remove losers
+from the observed universe. Token launchpad labels alone are not discovery proofs.
+
+The selected entry freezes the pair used for all future prices. Both adapters pass
+stable source references to price-path-v2, including equal-time endpoint tie breaks.
+24-hour extraction includes the shared five-second endpoint tolerance. The builder
+records `evaluation_as_of` in each export and manifest: by default the earlier of
+the build read time and period end + 24 hours + 5 seconds. Callers may select an
+earlier cutoff. Snapshot as_of and observed_at must both be known by that cutoff;
+entry features must already be available at the signal timestamp. Late receipts
+can complete outcomes at a later evaluation time, without claiming they were known
+earlier. Historical/live parity compares the same evaluation availability time.
+
+Materialization captures the research epoch before the universe/source read and
+checks throughout streaming. The manifest contains source values, price provenance,
+early replay inputs, row-content digest, recipes, periods and snapshot dependencies.
+Dataset labels identify a study; changed inputs append a research revision with a
+new ID. Rows inherit current parent visibility and cannot be overwritten/deleted.
+Trusted loaders refresh persisted JSON and return copies rather than shared cache.
+
+0041 retains and quarantines legacy metadata/payloads. The durable worker preserves
+known recipes, dates and evaluation_as_of, waits for prerequisite reconstruction,
+and appends replacements without committing unrelated caller work. Identical
+writers converge without duplicate rows. Unknown legacy parameters explicitly use
+`legacy-upgrade-to-dataset-v5`; former extraction is not claimed reproduced.
+Unsupported recipes remain unavailable. Lossy downgrade is refused after new work.
+
+Normal backtest API/CLI paths reject stale IDs/labels and recheck after evaluation.
+API rejection is 409 / REBUILDING with an audit URL. Current results carry revision,
+epoch and digest; CLI JSON/CSV exports carry their source identity. External file
+imports are labelled UNVERIFIED with a content digest, since they cannot establish
+current canonical validity. Audit-only
+`GET /api/research/datasets/{id}/rows?limit=50&before_id=...` returns preserved rows
+in pages of at most 200; the existing snapshot endpoint supplies the full manifest.
+
 ## Remaining programme work
 
-R3 still covers reconstruction of existing Forward entry/outcome observations and materialized datasets/
-backtests. These artifacts are not validated by association with these snapshots.
+R3 still covers reconstruction of existing Forward entry/outcome observations and
+the exact dependency binding of invalid in-flight wallet/token computations.
+Forward artifacts are not validated by association with these snapshots.
 Supported source mutation must use canonical invalidation; raw SQL audit access
 is separate from trusted current APIs.
 

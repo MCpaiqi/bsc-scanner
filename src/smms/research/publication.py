@@ -3,6 +3,7 @@
 from sqlalchemy import and_, select, update
 
 from smms.db.models import (
+    BacktestDataset,
     EarlyBuyer,
     RadarFeatureObservation,
     ResearchSnapshotDependency,
@@ -19,6 +20,7 @@ from .lineage import digest, manifest, row_values
 from .state import insert_once
 
 IDENTITY = {
+    BacktestDataset: ("chain", "dataset_version"),
     TokenMarketSnapshot: ("chain", "token_address", "pair_address", "source", "as_of"),
     TokenRiskSnapshot: ("chain", "token_address", "as_of", "risk_version"),
     TokenSmartMoneySnapshot: ("chain", "token_address", "as_of", "score_version"),
