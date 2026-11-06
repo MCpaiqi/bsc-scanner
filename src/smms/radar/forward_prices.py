@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from smms.db.facts import canonical_fact_conditions
 from smms.db.models import MarketEvent, Pair, TokenMarketSnapshot, TradeEvent
 from smms.evaluation import PricePoint, positive_price, utc
+from smms.research.lineage import row_values
 
 ENTRY_MAX_AGE = timedelta(seconds=30)
 
@@ -28,6 +29,7 @@ def load_usd_prices(
     ranges: list[tuple[str, datetime, datetime]],
     *,
     as_of: datetime,
+    lineage: dict | None = None,
 ) -> dict[str, list[PricePoint]]:
     """Batch-read exact token/time ranges, never generic unlabelled quote prices."""
     result = defaultdict(list)
@@ -90,4 +92,31 @@ def load_usd_prices(
             result[row.token_address].append(PricePoint(
                 timestamp, value, f"{priority}:{model.__name__}:{row.id:020d}", provenance,
             ))
+            if lineage is not None:
+                lineage.setdefault("sources", {})[f"{model.__name__}:{row.id}"] = {
+                    "kind": model.__name__, "values": row_values(row),
+                }
+                if model is TokenMarketSnapshot:
+                    lineage.setdefault("dependencies", {})[row.id] = {
+                        "kind": row.__tablename__, "id": row.id,
+                        "digest": (row.input_manifest or {}).get("digest"),
+                    }
+    if lineage is not None:
+        addresses = {p.provenance["pair_address"] for points in result.values() for p in points}
+        lineage["pairs"] = {pair.address: row_values(pair) for pair in session.scalars(select(Pair).where(
+            Pair.chain_id == 56, Pair.address.in_(addresses), *canonical_fact_conditions(Pair),
+        ).execution_options(populate_existing=True))} if addresses else {}
     return result
+
+
+def price_facts(lineage, points):
+    keys = {f"{p.provenance['model']}:{p.provenance['id']}" for p in points if p.provenance}
+    pairs = {p.provenance["pair_address"] for p in points if p.provenance}
+    return {"sources": [lineage["sources"][key] for key in sorted(keys)],
+            "pairs": [lineage["pairs"][key] for key in sorted(pairs) if key in lineage.get("pairs", {})]}
+
+
+def price_dependencies(lineage, points):
+    identities = {p.provenance["id"] for p in points
+                  if p.provenance and p.provenance["model"] == "TokenMarketSnapshot"}
+    return [lineage["dependencies"][identity] for identity in sorted(identities)]

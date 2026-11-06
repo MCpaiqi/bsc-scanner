@@ -297,7 +297,7 @@ def test_price_receipt_cutoff_is_explicit_and_matches_forward(research_session, 
     historical = next(e for e in result.evaluations if e.horizon == "30s")
     assert payload["evaluation_as_of"] == cutoff.isoformat()
     assert historical.available is available
-    assert historical.return_pct == forward.return_pct
+    assert historical.return_pct == (forward.return_pct if forward is not None else None)
 
 
 def test_loader_refreshes_nested_payload_cache_from_persisted_rows(research_session):

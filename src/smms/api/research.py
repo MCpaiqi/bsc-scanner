@@ -8,6 +8,8 @@ from smms.db.database import session_scope
 from smms.db.models import (
     BacktestDataset,
     BacktestDatasetRow,
+    ForwardEvaluationJob,
+    LiveSignalObservation,
     ResearchEpoch,
     ResearchRebuildJob,
     ResearchState,
@@ -16,6 +18,19 @@ from smms.research.lineage import row_values
 from smms.research.publication import MODELS
 
 router = APIRouter(prefix="/api/research", tags=["research-audit"])
+
+
+@router.get("/forward-jobs")
+async def forward_jobs(limit: int = Query(50, ge=1, le=200), before_id: int | None = Query(None, ge=1)):
+    query = select(ForwardEvaluationJob).join(LiveSignalObservation,
+        LiveSignalObservation.id == ForwardEvaluationJob.observation_id).where(LiveSignalObservation.chain == "bsc")
+    if before_id is not None:
+        query = query.where(ForwardEvaluationJob.id < before_id)
+    async with session_scope(get_settings()) as session:
+        rows = (await session.scalars(query.order_by(ForwardEvaluationJob.id.desc()).limit(limit + 1)
+                                      .execution_options(include_invalid_snapshots=True, populate_existing=True))).all()
+    return {"audit_only": True, "jobs": [row_values(row) for row in rows[:limit]],
+            "next_cursor": rows[limit - 1].id if len(rows) > limit else None}
 
 
 @router.get("/datasets/{dataset_id}/rows")

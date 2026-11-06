@@ -36,7 +36,12 @@ from .entities import (
     WalletTokenPosition,
     WalletTransaction,
 )
-from .live import ForwardEvaluationCursor, LiveSignalObservation, LiveSignalOutcome
+from .live import (
+    ForwardEvaluationCursor,
+    ForwardEvaluationJob,
+    LiveSignalObservation,
+    LiveSignalOutcome,
+)
 from .market import AlphaSnapshot, TokenMarketSnapshot
 from .radar import (
     RadarCandidate,
@@ -71,6 +76,7 @@ __all__ = [
     "EventType",
     "EvidenceObservationRecord",
     "ForwardEvaluationCursor",
+    "ForwardEvaluationJob",
     "IngestionRun",
     "LiveSignalObservation",
     "LiveSignalOutcome",

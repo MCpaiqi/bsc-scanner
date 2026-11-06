@@ -10,6 +10,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from smms.db.models import (
     BacktestDataset,
     EarlyBuyer,
+    LiveSignalObservation,
+    LiveSignalOutcome,
     RadarCandidate,
     RadarFeatureObservation,
     ResearchRebuildCursor,
@@ -52,7 +54,15 @@ def _repair(session, *, epoch, now, batch_size):
 
 def _rebuild(session, old):
     parameters = (old.input_manifest or {}).get("parameters", {})
-    if isinstance(old, BacktestDataset):
+    if isinstance(old, LiveSignalObservation):
+        from smms.radar.forward_research import rebuild_observation
+
+        return rebuild_observation(session, old)
+    elif isinstance(old, LiveSignalOutcome):
+        from smms.radar.live_forward import rebuild_outcome
+
+        return rebuild_outcome(session, old)
+    elif isinstance(old, BacktestDataset):
         from smms.backtest.dataset import HistoricalDatasetBuilder
 
         from .dependencies import require_rebuilt_dependencies

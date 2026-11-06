@@ -59,7 +59,7 @@ def test_alpha_upgrade_preserves_legacy_and_refuses_lossy_downgrade():
             assert len(pending) == 4 and all(row.alpha_score is None for row in pending)
         refused = alembic("downgrade", "20261105_0035")
         assert refused.returncode != 0 and "Alpha coverage work exists" in refused.stderr
-        assert "20261106_0041" in alembic("current").stdout
+        assert "20261106_0042" in alembic("current").stdout
     finally:
         scoped.dispose()
         try:

@@ -12,6 +12,18 @@ class DependenciesPending(ValueError):
     pass
 
 
+def current_revision(session, source):
+    """Resolve a persisted source's logical identity, including explicit UNKNOWN."""
+    model = type(source)
+    epoch = capture_epoch(session, source.chain)
+    return session.scalar(select(model).where(*[
+        getattr(model, key) == getattr(source, key) for key in IDENTITY[model]
+    ], model.source_epoch.in_((epoch, -1)) if model.__tablename__ == "token_market_snapshots" else model.source_epoch == epoch,
+        model.snapshot_status.in_(("VALID", "UNAVAILABLE")))
+        .order_by(model.research_revision.desc()).limit(1)
+        .execution_options(include_invalid_snapshots=True, populate_existing=True))
+
+
 def require_rebuilt_dependencies(session, row):
     dependencies = list((row.input_manifest or {}).get("dependencies", []))
     for field, kind in (("smart_snapshot_id", "token_smart_money_snapshots"),

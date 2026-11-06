@@ -10,11 +10,13 @@ from test_research_integrity import research_session as _research_session
 
 from smms.backtest.signal_engine import evaluate_signal, generate_signal, run_backtest
 from smms.db.models import (
+    ForwardEvaluationJob,
     LiveSignalObservation,
     LiveSignalOutcome,
     MarketEvent,
     Pair,
     RadarCandidate,
+    RadarCandidateEvidence,
     Token,
     TokenMarketSnapshot,
     TradeEvent,
@@ -35,6 +37,9 @@ def observation(session, *, suffix="a", price="1", basis="USD", observation_id=N
                                discovery_source="DEX_PAIR", discovery_reason="fixture")
     session.add_all([pair, candidate])
     session.flush()
+    session.add(RadarCandidateEvidence(candidate_id=candidate.id, source_key=f"pair:{pair.id}", source_kind="PAIR_CREATED", pair_id=pair.id, raw_required=False, valid=True))
+    from smms.radar.engine import RadarEngine
+    RadarEngine(session).refresh(candidate, at=T0)
     row = LiveSignalObservation(
         id=observation_id,
         candidate_id=candidate.id, token_id=token.id, chain="bsc", token_address=token.address,
@@ -65,7 +70,7 @@ def market(session, row, seconds, price, *, metadata=None):
 def outcome(session, row, horizon="30s"):
     return session.scalar(select(LiveSignalOutcome).where(
         LiveSignalOutcome.observation_id == row.id, LiveSignalOutcome.horizon == horizon,
-    ).order_by(LiveSignalOutcome.id.desc()))
+    ).order_by(LiveSignalOutcome.id.desc()).execution_options(include_invalid_snapshots=True))
 
 
 def test_thirty_second_horizon_cannot_accept_price_two_hours_later(research_session):
@@ -75,7 +80,7 @@ def test_thirty_second_horizon_cannot_accept_price_two_hours_later(research_sess
     evaluate_due(research_session, at=T0 + timedelta(hours=2))
 
     result = outcome(research_session, row)
-    assert result.status == "PENDING"
+    assert result.status == "UNKNOWN"
     assert result.return_pct is None
     assert result.error_code == "MISSING_PRICE"
 
@@ -135,7 +140,7 @@ def test_live_and_backtest_share_endpoint_and_drawdown_policy(research_session, 
 
 def test_legacy_complete_result_is_preserved_and_excluded_from_current_stats(research_session):
     row = observation(research_session)
-    legacy = LiveSignalOutcome(observation_id=row.id, horizon="30s",
+    legacy = LiveSignalOutcome(observation_id=row.id, observation_root_id=row.id, horizon="30s",
                                target_at=T0 + timedelta(seconds=30), status="COMPLETE",
                                return_pct=Decimal(999))
     legacy.evaluation_version = "legacy-v1"
@@ -241,7 +246,7 @@ def test_unknown_entry_basis_stays_unavailable(research_session):
     evaluate_due(research_session, at=T0 + timedelta(seconds=30))
 
     result = outcome(research_session, row)
-    assert result.status == "PENDING"
+    assert result.status == "UNKNOWN"
     assert result.error_code == "PRICE_BASIS_UNKNOWN"
     assert result.return_pct is None
 
@@ -290,13 +295,13 @@ def test_orphan_pair_cannot_supply_a_usd_endpoint(research_session):
 
     evaluate_due(research_session, at=T0 + timedelta(seconds=30))
 
-    assert outcome(research_session, row).status == "PENDING"
+    assert outcome(research_session, row).status == "UNKNOWN"
 
 
 def test_pending_retry_and_cursor_survive_a_new_session(research_session):
     row = observation(research_session)
     evaluate_due(research_session, at=T0 + timedelta(seconds=30))
-    pending = outcome(research_session, row)
+    pending = research_session.scalar(select(ForwardEvaluationJob).where(ForwardEvaluationJob.observation_id == row.id, ForwardEvaluationJob.horizon == "30s"))
     assert pending.error_code == "MISSING_PRICE"
     assert pending.next_evaluation_at.replace(tzinfo=UTC) == T0 + timedelta(seconds=90)
     market(research_session, row, 30, "1.2")  # delayed ingestion, original event time
@@ -354,8 +359,8 @@ def test_new_observation_enqueues_horizons_in_its_own_transaction(research_sessi
 
     row = record_observation(research_session, candidate, "WATCH", at=T0)
 
-    tasks = research_session.scalars(select(LiveSignalOutcome).where(
-        LiveSignalOutcome.observation_id == row.id,
+    tasks = research_session.scalars(select(ForwardEvaluationJob).where(
+        ForwardEvaluationJob.observation_id == row.id,
     )).all()
     assert {item.horizon for item in tasks} == {"30s", "1m", "5m", "15m", "30m", "1h", "4h", "24h"}
 

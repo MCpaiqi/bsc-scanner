@@ -1,7 +1,7 @@
 # Canonical derived research revisions
 
-Apply migrations through `20261106_0041` before starting updated services. This
-covers market, risk, wallet/token intelligence, buyers/positions, Radar/Signal and historical dataset snapshots;
+Apply migrations through `20261106_0042` before starting updated services. This
+covers market, risk, wallet/token intelligence, buyers/positions, Radar/Signal, historical datasets and Forward snapshots;
 existing values remain stored as history. R3 still has the scope listed below.
 
 ## Visibility and history
@@ -217,11 +217,59 @@ current canonical validity. Audit-only
 `GET /api/research/datasets/{id}/rows?limit=50&before_id=...` returns preserved rows
 in pages of at most 200; the existing snapshot endpoint supplies the full manifest.
 
+## Forward observations and results
+
+0042 preserves and quarantines pre-lineage observations/outcomes. Current records
+use the same epoch, immutable revision, manifest, dependency and audit contract.
+Old values are not rewritten. Outcomes reference both a stable observation_root_id
+(the first recorded observation) and the actual input observation_id revision.
+Same-epoch endpoint/provider correction invalidates affected results transitively;
+canonical reorgs hide old entries/results immediately. Reconstruction preserves
+T0, frozen Radar/Signal parameters, entry pair, and evaluation availability time.
+
+The cohort policy is `recorded-transition-cohort-v1`: retain the class that was
+actually first recorded, rather than selecting a new cohort using corrected or
+future performance. Canonical inputs may be corrected independently of that
+recorded decision. A withdrawn canonical discovery/signal becomes an UNAVAILABLE
+audit observation. Unrecoverable legacy signal parameters/scores stay unknown,
+under explicit `legacy-forward-upgrade-v1`; former strategy parameters are not
+claimed reproduced. Unsupported evaluation recipes remain audit-only.
+
+Entry prices share explicit USD sources and the 30-second bound with dataset-v5.
+Market cap/liquidity require explicit USD snapshots of the same frozen entry pair;
+another pool's cached liquidity cannot create false liquidity-failure/rug labels.
+Exact normalized source/Pair values and derived snapshot IDs/digests are retained.
+Missing entry or endpoint prices never reuse orphaned values or prove zero returns.
+
+ForwardEvaluationJob holds mutable attempts/retry time/status/result pointer, one
+job per observation revision/horizon/recipe. Outcome attempts publish COMPLETE or
+UNKNOWN research revisions; UNKNOWN results are excluded from usable results and
+the job remains PENDING. Missing T0 prices can be recovered after delayed ingestion
+without moving T0. Publication of the replacement observation and its new horizon
+jobs is atomic. The first-observation identity is rechecked under the database
+identity lock so competing transitions cannot move T0.
+
+Bounded cyclic repair initializes missing jobs, cancels obsolete input jobs and
+reconciles completed jobs whose result was invalidated/rebuilt. COMPLETE→UNKNOWN
+reopens retry; COMPLETE replacement fixes result_id. Repair uses job-first locks,
+outside result publication, avoiding inverse lock order with evaluators. Busy repair
+cursors are skipped so independent evaluators can claim due jobs. Per-job savepoints
+keep one rejected result from aborting neighboring work; rollback/restart retain
+queue and immutable history. Dense price windows and repeated UNKNOWN retention
+still require R11 bounds; a bounded job count alone does not bound their source rows.
+
+Performance reads matched current input/result revisions in one SELECT and fences
+epoch changes. It exposes source/current epoch, REBUILDING/withheld state and per
+horizon observed, pending, not-due and withdrawn counts. Available-only metrics
+retain their sample_count denominator. Audit-only
+`GET /api/research/forward-jobs?limit=50&before_id=...` pages job provenance;
+existing snapshot audit URLs expose old observations/outcomes and their manifests.
+Full UI presentation/pagination remains the R9 programme gate.
+
 ## Remaining programme work
 
-R3 still covers reconstruction of existing Forward entry/outcome observations and
-the exact dependency binding of invalid in-flight wallet/token computations.
-Forward artifacts are not validated by association with these snapshots.
+R3 still requires the exact dependency binding of invalid in-flight wallet/token
+computations and its final transitive integrity audit.
 Supported source mutation must use canonical invalidation; raw SQL audit access
 is separate from trusted current APIs.
 

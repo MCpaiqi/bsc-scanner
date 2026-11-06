@@ -8,6 +8,8 @@ from smms.db.models import (
     BacktestDataset,
     BacktestDatasetRow,
     EarlyBuyer,
+    LiveSignalObservation,
+    LiveSignalOutcome,
     RadarFeatureObservation,
     ResearchState,
     Signal,
@@ -19,7 +21,8 @@ from smms.db.models import (
 )
 
 SNAPSHOT_MODELS = (TokenMarketSnapshot, TokenRiskSnapshot, TokenSmartMoneySnapshot, WalletSmartMoneySnapshot,
-                   EarlyBuyer, WalletTokenPosition, RadarFeatureObservation, Signal, BacktestDataset)
+                   EarlyBuyer, WalletTokenPosition, RadarFeatureObservation, Signal, BacktestDataset,
+                   LiveSignalObservation, LiveSignalOutcome)
 
 
 def visible_conditions(model):

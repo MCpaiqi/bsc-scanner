@@ -19,12 +19,14 @@ from sqlalchemy.orm import Mapped, mapped_column
 from smms.evaluation import FORWARD_EVALUATION_VERSION
 
 from .base import Base, utc_now
+from .research import SnapshotLineageMixin
 
 
-class LiveSignalObservation(Base):
+class LiveSignalObservation(SnapshotLineageMixin, Base):
     __tablename__ = "live_signal_observations"
     __table_args__ = (
-        UniqueConstraint("candidate_id", "signal_class", name="uq_live_observation_candidate_class"),
+        UniqueConstraint("candidate_id", "signal_class", "research_revision", name="uq_live_observation_candidate_class"),
+        Index("ix_live_observations_rebuild", "chain", "source_epoch", "snapshot_status", "id"),
         Index("ix_live_observations_token_time", "chain", "token_address", "observed_at"),
         Index("ix_live_observations_group", "sample_group", "observed_at"),
     )
@@ -50,16 +52,19 @@ class LiveSignalObservation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
-class LiveSignalOutcome(Base):
+class LiveSignalOutcome(SnapshotLineageMixin, Base):
     __tablename__ = "live_signal_outcomes"
     __table_args__ = (
-        UniqueConstraint("observation_id", "horizon", "evaluation_version",
+        UniqueConstraint("observation_root_id", "horizon", "evaluation_version", "research_revision",
                          name="uq_live_outcome_observation_horizon_version"),
+        Index("ix_live_outcomes_rebuild", "chain", "source_epoch", "snapshot_status", "id"),
         Index("ix_live_outcomes_horizon_status", "horizon", "status"),
         Index("ix_live_outcomes_due", "evaluation_version", "status", "next_evaluation_at", "id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    chain: Mapped[str] = mapped_column(String(32), nullable=False, default="bsc")
+    observation_root_id: Mapped[int] = mapped_column(ForeignKey("live_signal_observations.id"), nullable=False)
     observation_id: Mapped[int] = mapped_column(ForeignKey("live_signal_observations.id", ondelete="CASCADE"), nullable=False)
     horizon: Mapped[str] = mapped_column(String(8), nullable=False)
     target_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -88,6 +93,28 @@ class LiveSignalOutcome(Base):
     endpoint_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18))
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
     error_code: Mapped[str | None] = mapped_column(String(32))
+
+
+class ForwardEvaluationJob(Base):
+    """Mutable retry state, separate from append-only research results."""
+
+    __tablename__ = "forward_evaluation_jobs"
+    __table_args__ = (
+        UniqueConstraint("observation_id", "horizon", "evaluation_version", name="uq_forward_job_identity"),
+        Index("ix_forward_jobs_due", "status", "next_evaluation_at", "id"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    observation_id: Mapped[int] = mapped_column(ForeignKey("live_signal_observations.id"), nullable=False)
+    observation_root_id: Mapped[int] = mapped_column(ForeignKey("live_signal_observations.id"), nullable=False)
+    horizon: Mapped[str] = mapped_column(String(8), nullable=False)
+    target_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    evaluation_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    next_evaluation_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    result_id: Mapped[int | None] = mapped_column(ForeignKey("live_signal_outcomes.id"))
 
 
 class ForwardEvaluationCursor(Base):

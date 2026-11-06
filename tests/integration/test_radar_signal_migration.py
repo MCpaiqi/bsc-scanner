@@ -121,7 +121,7 @@ def test_legacy_radar_and_signal_values_are_preserved_and_reconstructed():
             assert candidate_view(session, session.get(RadarCandidate, candidate_id))["features"]["smart_money_score"] == "UNKNOWN"
         refused = alembic("downgrade", "20261106_0039")
         assert refused.returncode != 0 and "refusing lossy downgrade" in refused.stderr
-        assert "20261106_0041" in alembic("current").stdout
+        assert "20261106_0042" in alembic("current").stdout
     finally:
         engine.dispose()
         try:

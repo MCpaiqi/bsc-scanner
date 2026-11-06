@@ -5,6 +5,8 @@ from sqlalchemy import and_, select, update
 from smms.db.models import (
     BacktestDataset,
     EarlyBuyer,
+    LiveSignalObservation,
+    LiveSignalOutcome,
     RadarFeatureObservation,
     ResearchSnapshotDependency,
     ResearchSnapshotLock,
@@ -29,8 +31,17 @@ IDENTITY = {
     WalletTokenPosition: ("chain", "wallet_address", "token_address", "as_of", "recipe_hash"),
     RadarFeatureObservation: ("chain", "candidate_id", "as_of", "config_hash"),
     Signal: ("chain", "token_id", "created_at", "model_version"),
+    LiveSignalObservation: ("chain", "candidate_id", "signal_class"),
+    LiveSignalOutcome: ("chain", "observation_root_id", "horizon", "evaluation_version"),
 }
 MODELS = {model.__tablename__: model for model in IDENTITY}
+
+
+def lock_identity(session, model, identity):
+    key = digest({"kind": model.__tablename__, **identity})
+    insert_once(session, ResearchSnapshotLock, {"identity": key}, ["identity"])
+    session.scalar(select(ResearchSnapshotLock).where(ResearchSnapshotLock.identity == key).with_for_update())
+    return key
 
 
 def _lock_dependencies(session, record):
@@ -76,9 +87,7 @@ def _invalidate_dependents(session, source):
 def publish_snapshot(session, record):
     model = type(record)
     identity = {name: getattr(record, name) for name in IDENTITY[model]}
-    key = digest({"kind": model.__tablename__, **identity})
-    insert_once(session, ResearchSnapshotLock, {"identity": key}, ["identity"])
-    session.scalar(select(ResearchSnapshotLock).where(ResearchSnapshotLock.identity == key).with_for_update())
+    key = lock_identity(session, model, identity)
     latest = session.scalar(select(model).where(*[
         getattr(model, name) == value for name, value in identity.items()
     ]).order_by(model.research_revision.desc(), model.id.desc()).limit(1)

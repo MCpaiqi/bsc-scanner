@@ -437,3 +437,65 @@ separate gate; schema creation inside regressions does not prove migration parit
   temporary-environment cleanup with "blocked by policy" and no detailed reason;
   generated .venv/uv.lock/offline SQL remain outside the scoped commit. Existing
   untracked product/data files are preserved.
+
+## Forward observation/outcome reconstruction (2026-11-06)
+
+- Continued R3 with immutable LiveSignalObservation/LiveSignalOutcome revisions
+  under the shared epoch/manifest/dependency/publication contract. Canonical reorg
+  and same-epoch source corrections withhold old entries/returns immediately;
+  source values remain auditable. Outcomes retain a stable first-observation root
+  while binding the actual input revision. Rebuilds preserve original T0, frozen
+  policy, entry pair and evaluation_as_of without selecting a new profitable cohort.
+- Cohorts explicitly mean recorded-transition-cohort-v1. Revised canonical inputs
+  do not rewrite the originally recorded class. Withdrawn canonical discovery or
+  signal yields an UNAVAILABLE audit observation. Unknown legacy parameters/scores
+  are not invented; legacy-forward-upgrade-v1 is explicit and old values remain.
+  Unsupported recipes are excluded rather than certified by newer code.
+- ForwardEvaluationJob separates mutable retry state from immutable result values.
+  Atomic horizon enqueue, bounded cyclic repair, pending retry, savepoints and
+  job-first locking cover restart, rollback, failed-neighbor isolation and concurrent
+  claims. Missing original entry prices can recover after delayed ingestion while
+  preserving T0. Completed-result invalidation/rebuild repairs job pointers and
+  reopens UNKNOWN results for retry; a replaced result cannot strand a COMPLETE job.
+- Exact normalized price/Pair sources and derived dependencies are captured. Entry
+  liquidity/market cap come from explicit USD snapshots of the frozen entry pair,
+  preventing another pool's values from fabricating rug/liquidity-failure labels.
+  Price-path-v2/forward-v2 arithmetic and bounded endpoints remain unchanged.
+- Performance reads matching current observation/result revisions in one SELECT,
+  fences epoch changes and reports withheld/rebuilding, observed, pending, not-due
+  and withdrawn states. Available-only metric denominators stay explicit. Existing
+  snapshot audit endpoints cover both Forward tables; /api/research/forward-jobs
+  pages operational provenance without certifying historical results current.
+- Migration0042 preserves/quarantines real pre-lineage observations and legacy-v1/
+  forward-v2 values, reconstructs corrected forward-v2 returns after restart and
+  refuses lossy downgrade once research/jobs exist. No production migration or live
+  provider request ran. Existing untracked product/data and prior temporary files
+  are retained outside this scope.
+- One fresh read-only reviewer confirmed two P1s with small SQLite reproductions:
+  competing empty first lookups could move T0; COMPLETE→UNKNOWN repair failed to
+  reopen its job. Both have regressions and fixes. Root-directed PostgreSQL tests
+  also reproduced/fixed repair-cursor serialization and cross-pair liquidity.
+  This was one review and one material fix pass, with no implementer agents.
+- Final implementation backend: **667 passed, 26 skipped, 13 existing warnings**.
+  Isolated PostgreSQL comprehensive suite: **128 passed, 4 existing warnings**,
+  covering Forward/historical/Radar public paths, concurrency/rollback/restart and
+  all seven historical migration fixtures (including calculation-only regressions).
+  Full Ruff(src/tests), whitespace, Compose configuration, Alembic0042 head and
+  offline migration SQL (**1339 lines**) passed. Frontend sources were unchanged;
+  previous web results are not presented as newly run in this slice.
+- Cleanup verified zero owned test schemas before removing the labelled isolated
+  PostgreSQL container/volume. Prior temporary .venv/uv.lock/offline SQL and existing
+  untracked product/data files remain outside the scoped commit.
+- R3 remains OPEN for exact invalid in-flight wallet/token dependency binding and
+  its final transitive integrity audit. R6/R7/R9–R14 remain OPEN, including deferred
+  projection effects/outbox, SSE, complete UI behavior, dense price/input bounds and
+  repeated UNKNOWN retention, reproducible source/CI, access controls, full topology
+  and provider/risk-field compatibility. The overall goal remains ACTIVE.
+- Follow-up audit found a concrete additional wallet/token freshness defect in
+  IntelligenceAggregationService's raw-source queries. An isolated in-memory
+  SQLite reproduction retained TradeEvent.value_usd=10 in a reader, committed a
+  second-session correction to20 plus canonical invalidation, then refreshed the
+  reader. Persisted SQL value was20 while the newly visible epoch2 token flow and
+  manifest still contained10. These queries lack populate_existing. This remains
+  a required R3 fix alongside exact computed-profile/publication-winner binding;
+  prior snapshot/Forward passes do not certify wallet aggregation freshness.
