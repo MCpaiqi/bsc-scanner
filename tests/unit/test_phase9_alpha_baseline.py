@@ -489,6 +489,9 @@ def test_live_alpha_snapshot_is_point_in_time_and_idempotent() -> None:
             _trade(T0 + timedelta(seconds=10), tx="early", price_quote="1", quote="1", token="1"),
             _trade(T0 + timedelta(seconds=45), tx="late", price_quote="100", quote="10", token="0.1"),
         ])
+        session.flush()
+        for row in session.query(TradeEvent).all():
+            row.block_number = 110 if row.tx_hash == "early" else 145
         session.commit()
         assert process_live_alpha(session, now=T0 + timedelta(seconds=300)) == 4
         session.commit()

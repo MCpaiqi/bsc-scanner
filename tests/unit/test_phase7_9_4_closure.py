@@ -312,7 +312,10 @@ def test_risk_snapshot_serializes_decimal_dimension_details() -> None:
         session.flush()
 
         RiskAggregationService(session, chain="bsc").refresh(
-            as_of=NOW, token_address=row.address
+            as_of=NOW, token_address=row.address,
+            resolved_evidence={"liquidity_usd": {"resolved_value": Decimal(5000), "source": "fixture",
+                                                "evidence_level": "TRUSTED_PROVIDER", "freshness": "FRESH",
+                                                "confidence": 1}},
         )
         session.commit()
 

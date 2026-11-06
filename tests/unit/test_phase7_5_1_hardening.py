@@ -191,6 +191,10 @@ def test_aggregation_is_idempotent_and_excludes_all_future_inputs() -> None:
 
     with Session(engine) as session:
         session.add(Token(address="token", chain="bsc", creation_timestamp=past))
+        from smms.db.models import Pair
+
+        session.add(Pair(chain_id=56, address="verified-pair", token0_address="token", token1_address="quote",
+                         creation_timestamp=past))
         session.add_all(
             [
                 TradeEvent(

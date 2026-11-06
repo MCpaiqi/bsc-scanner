@@ -18,6 +18,7 @@ from smms.db.models import (
     TokenRiskSnapshot,
 )
 from smms.observability import metrics
+from smms.research.visibility import is_current_snapshot
 
 from .features import UNKNOWN, RadarFeatureSnapshot
 
@@ -60,6 +61,8 @@ class LiveSignalService:
             if candidate.risk_snapshot_id
             else None
         )
+        if risk_snapshot is not None and not is_current_snapshot(self.session, risk_snapshot):
+            risk_snapshot = None
         if risk_snapshot is not None and _utc(risk_snapshot.as_of) > cutoff:
             raise ValueError("risk snapshot is newer than signal as_of")
         early_buyers = list(
@@ -88,7 +91,7 @@ class LiveSignalService:
             early_buyers=[{"timestamp": row.first_buy_timestamp} for row in early_buyers],
             risk={
                 "as_of": _utc(risk_snapshot.as_of) if risk_snapshot else cutoff,
-                "overall_risk": features.risk,
+                "overall_risk": features.risk if risk_snapshot is not None or not candidate.risk_snapshot_id else UNKNOWN,
             },
             model_version="signal-v1",
             config_version="phase-7.9.4",

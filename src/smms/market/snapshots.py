@@ -10,8 +10,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from smms.db.facts import canonical_fact_conditions
 from smms.db.models import TokenMarketSnapshot, TradeEvent
+from smms.evaluation import utc
 from smms.observability import metrics
+from smms.research.lineage import manifest, row_values
+from smms.research.publication import publish_snapshot
+from smms.research.state import capture_epoch
 
 
 def _decimal(value: Any) -> Decimal | None:
@@ -29,7 +34,7 @@ def _aggregate(rows: list[TradeEvent], *, as_of: datetime) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for minutes in (1, 5):
         start = as_of - timedelta(minutes=minutes)
-        window = [row for row in rows if start < row.timestamp <= as_of and row.canonical and not row.removed]
+        window = [row for row in rows if start < utc(row.timestamp) <= as_of and row.canonical and not row.removed]
         buys = [row for row in window if _side(row.side) == "BUY"]
         sells = [row for row in window if _side(row.side) == "SELL"]
         known_usd = [row.value_usd for row in window if row.value_usd is not None]
@@ -46,66 +51,44 @@ def _aggregate(rows: list[TradeEvent], *, as_of: datetime) -> dict[str, Any]:
     return result
 
 
-async def materialize_trade_snapshot(
-    session: AsyncSession,
-    trade: TradeEvent,
-    *,
-    as_of: datetime | None = None,
-) -> TokenMarketSnapshot:
-    cutoff = as_of or trade.timestamp or datetime.now(UTC)
-    rows = list(
-        (
-            await session.scalars(
-                select(TradeEvent).where(
-                    TradeEvent.chain == trade.chain,
-                    TradeEvent.token_address == trade.token_address,
-                    TradeEvent.timestamp > cutoff - timedelta(minutes=5),
-                    TradeEvent.timestamp <= cutoff,
-                )
-            )
-        ).all()
-    )
+async def materialize_trade_snapshot(session: AsyncSession, trade: TradeEvent, *,
+                                     as_of: datetime | None = None) -> TokenMarketSnapshot | None:
+    return await session.run_sync(lambda sync: rebuild_trade_snapshot(sync, trade, as_of=as_of))
+
+
+def rebuild_trade_snapshot(session: Session, trade: TradeEvent, *, as_of: datetime | None = None,
+                           token_address: str | None = None, pair_address: str | None = None,
+                           source_epoch: int | None = None):
+    cutoff = utc(as_of or trade.timestamp or datetime.now(UTC))
+    epoch = capture_epoch(session, trade.chain) if source_epoch is None else source_epoch
+    token_address = token_address or trade.token_address
+    pair_address = pair_address or trade.pair_address or "UNKNOWN"
+    rows = list(session.scalars(select(TradeEvent).where(
+        TradeEvent.chain == trade.chain, TradeEvent.token_address == token_address,
+        TradeEvent.pair_address == pair_address,
+        TradeEvent.timestamp > cutoff - timedelta(minutes=5), TradeEvent.timestamp <= cutoff,
+        *canonical_fact_conditions(TradeEvent),
+    ).order_by(TradeEvent.timestamp, TradeEvent.id)))
+    if not rows:
+        return None
     values = _aggregate(rows, as_of=cutoff)
-    identity = {
-        "chain": trade.chain,
-        "token_address": trade.token_address,
-        "pair_address": trade.pair_address or "UNKNOWN",
-        "source": "ON_CHAIN_TRADE_AGGREGATION",
-        "as_of": cutoff,
-    }
-    snapshot = await session.scalar(
-        select(TokenMarketSnapshot).where(
-            TokenMarketSnapshot.chain == identity["chain"],
-            TokenMarketSnapshot.token_address == identity["token_address"],
-            TokenMarketSnapshot.pair_address == identity["pair_address"],
-            TokenMarketSnapshot.source == identity["source"],
-            TokenMarketSnapshot.as_of == identity["as_of"],
-        )
-    )
-    snapshot_values = {
-        "chain_id": trade.chain_id or 56,
-        "dex": (trade.metadata_json or {}).get("dex"),
-        "observed_at": cutoff,
-        "freshness_seconds": 0,
-        "status": "KNOWN",
-        "metadata_json": {
-            "price_status": "UNKNOWN" if trade.price_usd is None else "KNOWN",
-            "volume_usd_coverage": {
-                "known": sum(1 for row in rows if row.value_usd is not None),
-                "total": len(rows),
-            },
-        },
+    known = sum(1 for row in rows if row.value_usd is not None)
+    record = TokenMarketSnapshot(
+        chain=trade.chain, token_address=token_address, pair_address=pair_address,
+        source="ON_CHAIN_TRADE_AGGREGATION", as_of=cutoff, chain_id=trade.chain_id or 56,
+        dex=(trade.metadata_json or {}).get("dex"), observed_at=cutoff, freshness_seconds=0,
+        status="KNOWN" if known == len(rows) else "DEGRADED", source_epoch=epoch,
+        input_manifest=manifest(kind="token_market_snapshots", parameters={
+            "token_address": token_address, "pair_address": pair_address,
+            "as_of": cutoff, "source": "ON_CHAIN_TRADE_AGGREGATION", "window_seconds": 300,
+            "input_policy": "canonical-research-v1",
+        }, facts={"trades": [row_values(row) for row in rows]}),
+        metadata_json={"price_status": "UNKNOWN", "volume_usd_coverage": {"known": known, "total": len(rows)}},
         **values,
-    }
-    if snapshot is None:
-        snapshot = TokenMarketSnapshot(**identity, **snapshot_values)
-        session.add(snapshot)
-    else:
-        for key, value in snapshot_values.items():
-            setattr(snapshot, key, value)
-    await session.flush()
+    )
+    result = publish_snapshot(session, record)
     metrics.increment("market_snapshots_updated")
-    return snapshot
+    return result
 
 
 def materialize_dexscreener_snapshot(
@@ -118,6 +101,8 @@ def materialize_dexscreener_snapshot(
     observed = as_of or datetime.now(UTC)
     txns = payload.get("txns_m5") if isinstance(payload.get("txns_m5"), dict) else {}
     snapshot = TokenMarketSnapshot(
+        source_epoch=-1, input_manifest=manifest(kind="token_market_snapshots",
+            parameters={"provider": "DEXSCREENER", "as_of": observed}, facts={"provider_observation": payload}),
         chain="bsc",
         chain_id=56,
         token_address=str(payload["token_address"]).lower(),
@@ -142,10 +127,9 @@ def materialize_dexscreener_snapshot(
         metadata_json={"provider_provenance": "DexScreener API",
                        **{key: payload.get(key) for key in ("symbol", "name", "image_url", "dex_url", "quote_symbol")}},
     )
-    session.add(snapshot)
-    session.flush()
+    result = publish_snapshot(session, snapshot)
     metrics.increment("market_snapshots_updated")
-    return snapshot
+    return result
 
 
 __all__ = ["materialize_dexscreener_snapshot", "materialize_trade_snapshot"]

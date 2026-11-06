@@ -39,6 +39,13 @@ from .entities import (
 from .live import ForwardEvaluationCursor, LiveSignalObservation, LiveSignalOutcome
 from .market import AlphaSnapshot, TokenMarketSnapshot
 from .radar import RadarCandidate, RadarCandidateEvidence, RadarCandidateHistory
+from .research import (
+    ResearchEpoch,
+    ResearchRebuildCursor,
+    ResearchRebuildJob,
+    ResearchSnapshotLock,
+    ResearchState,
+)
 from .runtime import EvidenceObservationRecord, RuntimeWorkerStatus, WorkerHeartbeat
 
 __all__ = [
@@ -73,6 +80,11 @@ __all__ = [
     "RawChainEvent",
     "RawChainRecord",
     "RecordStatus",
+    "ResearchEpoch",
+    "ResearchRebuildCursor",
+    "ResearchRebuildJob",
+    "ResearchSnapshotLock",
+    "ResearchState",
     "RuntimeWorkerStatus",
     "Signal",
     "SignalType",

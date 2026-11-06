@@ -34,10 +34,12 @@ def covered_pair(session):
 
 
 def raw_trade(seconds, *, tx, ratio=2, human=False, quote="2"):
-    return _trade(T0 + timedelta(seconds=seconds), tx=tx,
+    row = _trade(T0 + timedelta(seconds=seconds), tx=tx,
                   price_quote=str(ratio * 10**9) if human else None,
                   quote=quote, token=str(Decimal(quote) / (ratio * 10**9)) if human else None,
                   metadata={"amounts_raw": ["0", str(ratio * 10**18), str(10**18), "0"]})
+    row.block_number = 100 + seconds
+    return row
 
 
 def test_unknown_risk_is_not_safe_and_version_is_v3():

@@ -228,3 +228,45 @@ separate gate; schema creation inside regressions does not prove migration parit
   only the necessary existing type file was deliberately captured this batch.
 - Details: [ALPHA_RECONSTRUCTION.md](ALPHA_RECONSTRUCTION.md). No real RPC,
   production data rewrite, deploy, merge or push occurred.
+
+
+### Derived snapshot reconstruction slice, 2026-11-06
+
+- Continued R3 with market, risk and wallet/token intelligence snapshots. Canonical
+  invalidation advances a transactional BSC epoch, hiding transitive old derived
+  values through centralized ORM criteria (including aliases/latest subqueries).
+  Producers capture before source reads; stale publication cannot replace a newer
+  winner. Direct risk identity-map access verifies persisted visibility in SQL.
+- Publication appends immutable source/result revisions with predecessor, exact
+  manifests/digests and dependency snapshot IDs. Per-identity locks converge
+  concurrent writers. ORM mutations/reactivation are rejected. Numeric source
+  serialization is stable across persisted int/Decimal reloads.
+- Canonical parent-pair/time/block and JSON orphan checks protect child facts.
+  Early entry cannot fall back to cached Token creation; previously observed empty
+  subjects receive explicit UNKNOWN/sample-zero replacements. Market aggregation
+  follows pair identity; partial USD is DEGRADED and no-input reconstruction is an
+  UNAVAILABLE audit row, excluded from current markets.
+- Unversioned Token risk cache is excluded; explicit resolved evidence and canonical
+  trades provide inputs. Rebuilt missing external dimensions stay UNKNOWN while
+  known behavior can still indicate risk. Missing legacy intelligence parameters
+  use an explicit legacy-defaults-v1 manifest policy; unsupported recipes remain
+  unavailable with a recorded job reason.
+- Bounded persistent repair/jobs and an independent research-rebuild worker recover
+  across restarts, retries, stale epochs and commit-order inversion. Public read-only
+  research audit/epoch/job endpoints retain hidden values; normal DTOs add provenance
+  URLs. Migration 0038 preserves old values, quarantines pre-lineage derived rows,
+  preserves independent DexScreener observations and refuses destructive downgrade.
+- One fresh review identified four verified races/lineage defects, all regression-
+  fixed in one pass. Final backend **561 passed, 13 skipped, 13 existing warnings**;
+  isolated database command **65 passed** (**61 actual PostgreSQL**, three existing
+  async SQLite cases, one heartbeat simulation). Web **42 passed**, TypeScript/build,
+  Ruff/whitespace/Compose/head and offline migration SQL generation passed.
+- Owned test schemas were zero; labelled PostgreSQL container/anonymous volume and
+  temporary SQL were removed. No real provider calls, production rewrite, deploy,
+  merge or push occurred. Existing untracked source/data/release files were preserved.
+- R3 remains OPEN: EarlyBuyer/positions, Radar/Evidence/Signal caches, Forward entry
+  observations and materialized dataset/backtest staleness/reconstruction still need
+  implementation and verification. R6–R14 are unchanged/open; coarse epoch invalidation,
+  dense history/manifests and full health/dashboard/latency acceptance remain R11/R14.
+- Details: [DERIVED_RESEARCH.md](DERIVED_RESEARCH.md). Updated services require
+  migration `20261106_0038` before starting.

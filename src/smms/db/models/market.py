@@ -17,15 +17,16 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, utc_now
+from .research import SnapshotLineageMixin
 
 Decimal18 = Numeric(38, 18)
 
 
-class TokenMarketSnapshot(Base):
+class TokenMarketSnapshot(SnapshotLineageMixin, Base):
     __tablename__ = "token_market_snapshots"
     __table_args__ = (
         UniqueConstraint(
-            "chain", "token_address", "pair_address", "source", "as_of",
+            "chain", "token_address", "pair_address", "source", "as_of", "research_revision",
             name="uq_token_market_snapshot_identity",
         ),
         Index("ix_token_market_snapshot_lookup", "chain", "token_address", "as_of"),

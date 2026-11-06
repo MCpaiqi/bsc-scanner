@@ -154,6 +154,10 @@ def coverage_proof(session: Session, pair: Pair, *, start: datetime, end: dateti
 
 def invalidate_coverage(session: Session, *, from_block: int, now: datetime) -> int:
     """Conservatively invalidate every later proof; never retain a stale negative."""
+    from smms.research.state import invalidate_derived
+
+    invalidate_derived(session, reason="CANONICAL_INVALIDATION", cause={"from_block": from_block,
+                                                                      "observed_at": utc(now).isoformat()})
     jobs = session.scalars(select(AlphaCoverageJob).join(Pair).where(
         Pair.chain_id == 56,
         (AlphaCoverageJob.id.in_(select(AlphaCoverageReceipt.job_id).where(

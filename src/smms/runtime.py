@@ -604,9 +604,41 @@ async def run_alpha_coverage() -> None:
         await asyncio.sleep(1)
 
 
+async def run_research_rebuild() -> None:
+    from smms.research.rebuild import rebuild_due
+
+    settings = get_settings()
+    progress = {"status": "RUNNING", "jobs_examined": 0}
+
+    async def pulse():
+        while True:
+            try:
+                await heartbeat("research-rebuild", progress["status"],
+                                details={"jobs_examined": progress["jobs_examined"]})
+            except (SQLAlchemyError, OSError):
+                pass
+            await asyncio.sleep(min(30, settings.runtime_heartbeat_interval_seconds))
+
+    task = asyncio.create_task(pulse())
+    try:
+        while True:
+            try:
+                async with session_scope(settings) as session:
+                    count = await session.run_sync(lambda sync: rebuild_due(sync, now=datetime.now(UTC)))
+                    await session.commit()
+                progress.update(status="RUNNING", jobs_examined=count)
+            except (SQLAlchemyError, OSError, ValueError) as exc:
+                progress["status"] = "DEGRADED"
+                logging.getLogger(__name__).warning("research rebuild retry reason=%s", type(exc).__name__)
+            await asyncio.sleep(5)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("worker", choices=("bsc-ingestion", "bsc-live-tail", "radar-worker", "forward-worker", "alpha-coverage"))
+    parser.add_argument("worker", choices=("bsc-ingestion", "bsc-live-tail", "radar-worker", "forward-worker", "alpha-coverage", "research-rebuild"))
     worker = parser.parse_args().worker
     asyncio.run({
         "bsc-ingestion": run_bsc,
@@ -614,6 +646,7 @@ def main() -> None:
         "radar-worker": run_radar,
         "forward-worker": run_forward,
         "alpha-coverage": run_alpha_coverage,
+        "research-rebuild": run_research_rebuild,
     }[worker]())
 
 

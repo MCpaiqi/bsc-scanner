@@ -81,6 +81,10 @@ def test_forward_upgrade_preserves_legacy_values_and_refuses_lossy_downgrade():
             session.commit()
         upgraded = alembic("upgrade", "20261105_0035")
         assert upgraded.returncode == 0, upgraded.stderr
+        with scoped.connect() as connection:
+            assert connection.execute(text("SELECT evaluation_version FROM live_signal_outcomes")).scalar_one() == "legacy-v1"
+        current_schema = alembic("upgrade", "head")
+        assert current_schema.returncode == 0, current_schema.stderr
         with Session(scoped) as session:
             legacy = session.scalar(select(LiveSignalOutcome))
             assert legacy.evaluation_version == "legacy-v1"
@@ -99,7 +103,7 @@ def test_forward_upgrade_preserves_legacy_values_and_refuses_lossy_downgrade():
         assert "Forward versions coexist" in refused.stderr
         current = alembic("current")
         assert current.returncode == 0
-        assert "20261105_0035" in current.stdout
+        assert "20261106_0038" in current.stdout
         with scoped.connect() as connection:
             assert connection.execute(text("SELECT count(*) FROM live_signal_outcomes "
                                            "WHERE horizon = '30s'")).scalar_one() == 2

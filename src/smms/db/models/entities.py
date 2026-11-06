@@ -24,6 +24,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 from smms.chains.constants import normalize_address
 
 from .base import Base, TimestampMixin, utc_now
+from .research import SnapshotLineageMixin
 
 Decimal18 = Numeric(38, 18)
 RawAmount = Numeric(50, 0)
@@ -392,13 +393,13 @@ class SmartMoneyScore(Base):
     version: Mapped[str] = mapped_column(String(32), default="v1", nullable=False)
 
 
-class WalletSmartMoneySnapshot(Base):
+class WalletSmartMoneySnapshot(SnapshotLineageMixin, Base):
     """Versioned wallet profile and score materialized at a strict cutoff."""
 
     __tablename__ = "wallet_smart_money_snapshots"
     __table_args__ = (
         UniqueConstraint(
-            "chain", "wallet_address", "as_of", "score_version", "profile_version",
+            "chain", "wallet_address", "as_of", "score_version", "profile_version", "research_revision",
             name="uq_wallet_smart_money_snapshot_version",
         ),
         Index(
@@ -437,13 +438,13 @@ class WalletSmartMoneySnapshot(Base):
         return normalize_address(value, chain=chain or ("bsc" if str(value).lower().startswith("0x") else None))
 
 
-class TokenSmartMoneySnapshot(Base):
+class TokenSmartMoneySnapshot(SnapshotLineageMixin, Base):
     """Versioned token smart-money rollup materialized at a strict cutoff."""
 
     __tablename__ = "token_smart_money_snapshots"
     __table_args__ = (
         UniqueConstraint(
-            "chain", "token_address", "as_of", "score_version",
+            "chain", "token_address", "as_of", "score_version", "research_revision",
             name="uq_token_smart_money_snapshot_version",
         ),
         Index(
@@ -481,12 +482,12 @@ class TokenSmartMoneySnapshot(Base):
         return normalize_address(value, chain=chain or ("bsc" if str(value).lower().startswith("0x") else None))
 
 
-class TokenRiskSnapshot(Base):
+class TokenRiskSnapshot(SnapshotLineageMixin, Base):
     """Versioned, evidence-preserving risk snapshot independent of Smart Money."""
 
     __tablename__ = "token_risk_snapshots"
     __table_args__ = (
-        UniqueConstraint("chain", "token_address", "as_of", "risk_version", name="uq_token_risk_snapshot_version"),
+        UniqueConstraint("chain", "token_address", "as_of", "risk_version", "research_revision", name="uq_token_risk_snapshot_version"),
         Index("ix_token_risk_snapshot_lookup", "chain", "token_address", "risk_version", "as_of"),
         Index("ix_token_risk_snapshot_rank", "chain", "risk_version", "as_of", "overall_risk"),
     )

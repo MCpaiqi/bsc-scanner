@@ -15,6 +15,7 @@ from smms.api.demo import demo_bsc_tokens
 from smms.api.radar import alpha_router
 from smms.api.radar import meta_router as radar_meta_router
 from smms.api.radar import router as radar_router
+from smms.api.research import router as research_router
 from smms.backtest.signal_engine import run_backtest
 from smms.chains.constants import (
     BSC_CHAIN_ID,
@@ -70,6 +71,7 @@ app.include_router(radar_router)
 app.include_router(radar_meta_router)
 app.include_router(alpha_router)
 app.include_router(analyst_router)
+app.include_router(research_router)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 if WEB_DIST.is_dir():
     app.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="web-assets")
@@ -229,6 +231,13 @@ def _flap_readiness() -> dict[str, object]:
     }
 
 
+def _snapshot_provenance(row):
+    return {"research_revision": row.research_revision, "source_epoch": row.source_epoch,
+            "previous_snapshot_id": row.previous_snapshot_id,
+            "input_digest": (row.input_manifest or {}).get("digest"),
+            "lineage_url": f"/api/research/snapshots/{row.__tablename__}/{row.id}"}
+
+
 def _wallet_snapshot_payload(
     row: WalletSmartMoneySnapshot, *, network_influence: Decimal | float = 0
 ) -> dict[str, object]:
@@ -236,6 +245,7 @@ def _wallet_snapshot_payload(
     alpha = calculate_smart_money_alpha(payload, network_influence=network_influence)
     payload.update(
         {
+            **_snapshot_provenance(row),
             "wallet": row.wallet_address,
             "score": row.score,
             "smart_money_score": row.score,
@@ -268,6 +278,7 @@ def _wallet_snapshot_payload(
 
 def _token_snapshot_payload(row: TokenSmartMoneySnapshot) -> dict[str, object]:
     return {
+        **_snapshot_provenance(row),
         "token_address": row.token_address,
         "smart_wallet_count": row.smart_wallet_count,
         "smart_money_buy_usd": row.smart_money_buy_usd,
@@ -288,6 +299,7 @@ def _token_snapshot_payload(row: TokenSmartMoneySnapshot) -> dict[str, object]:
 def _risk_snapshot_payload(row: TokenRiskSnapshot) -> dict[str, object]:
     dimensions = row.dimensions_json or {}
     return {
+        **_snapshot_provenance(row),
         "token": row.token_address,
         "contract_risk": row.contract_risk,
         "liquidity_risk": row.liquidity_risk,
