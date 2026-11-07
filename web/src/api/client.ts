@@ -1,8 +1,15 @@
 import type { AlphaCandidateDetail, AlphaResponse, AlphaStats, CandidateResponse, DetailPayload, EarlyBuyer, HealthSnapshot, Candidate, RadarEvent, LivePerformance } from "../types/radar";
 
+export class ApiError extends Error {
+  constructor(readonly status: number, readonly dataStatus?: string) { super(`HTTP ${status}`); }
+}
+
 async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(path, { headers: { Accept: "application/json" }, signal });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new ApiError(response.status, body?.detail?.data_status);
+  }
   return response.json() as Promise<T>;
 }
 

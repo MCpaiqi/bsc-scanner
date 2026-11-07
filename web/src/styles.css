@@ -178,6 +178,14 @@ td small { display: block; color: var(--faint); font-size: 10px; }
 .row-open:hover { background: var(--panel2); color: var(--accent); }
 .table-footer { display: flex; justify-content: space-between; gap: 10px; padding: 13px 20px; border-top: 1px solid var(--line); font-size: 9px; color: var(--faint); }
 .table-footer > span { display: flex; align-items: center; gap: 7px; }
+.candidate-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; padding: 0 20px 16px; border-bottom: 1px solid var(--line); }
+.candidate-filters label { display: flex; flex-direction: column; gap: 5px; font-size: 11px; color: var(--muted); min-width: 0; }
+.candidate-filters input, .candidate-filters select { width: 100%; min-height: 44px; padding: 8px; border: 1px solid var(--line); background: var(--panel); }
+.candidate-filters button, .candidate-pagination button, .performance-panel button { min-height: 44px; align-self: end; padding: 8px 14px; color: var(--text); background: var(--panel); border: 1px solid var(--line); }
+.candidate-pagination { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 12px; padding: 16px; border-top: 1px solid var(--line); font-size: 11px; color: var(--muted); }
+.candidate-pagination button:disabled { cursor: default; }
+.research-status { padding: 10px 16px; color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.research-status[role="alert"] { color: var(--yellow); }
 .radar-mobile-cards { display: none; }
 .copy-address { display: flex; align-items: center; gap: 6px; padding: 3px 0; max-width: 100%; }
 .copy-address code { font: 10px var(--mono); color: var(--muted); }

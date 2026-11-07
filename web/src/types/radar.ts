@@ -10,7 +10,7 @@ export interface Candidate {
   launchpad: string;
   discovered_at?: string | null;
   latest_seen_at?: string | null;
-  priority_score: number;
+  priority_score: number | string;
   features: Record<string, unknown>;
   data_status: EvidenceStatus;
   evidence: Record<string, unknown>;
@@ -46,7 +46,12 @@ export interface HealthMetrics {
   sse?: Record<string, unknown>;
   [key: string]: unknown;
 }
-export interface CandidateResponse { candidates: Candidate[]; count: number; total: number; as_of?: string; observed_at?: string; updated_at?: string; freshness?: string; }
+export interface CandidateResponse {
+  candidates: Candidate[]; count: number; total: number;
+  universe_total?: number; tab_counts?: Record<"all" | "high_signal" | "watch" | "high_risk", number>;
+  offset?: number; limit?: number; has_more?: boolean; source_status?: string;
+  as_of?: string | null; observed_at?: string | null; updated_at?: string | null; freshness?: string;
+}
 export interface EarlyBuyer {
   wallet: string; rank: number; entry_time: string; entry_delay_seconds?: number;
   entry_usd?: string | null; roi?: string | null; realized_pnl?: string | null;
@@ -86,4 +91,4 @@ export interface HealthSnapshot {
   freshness?: string;
   [key: string]: unknown;
 }
-export interface LivePerformance { mode: "FORWARD_OBSERVATION"; horizons: Record<string, Record<string, { sample_count: number; median_return: number | null; win_rate: number | null; "2x_rate": number | null; rug_rate: number | null; max_drawdown: number | null }>>; }
+export interface LivePerformance { mode: "FORWARD_OBSERVATION"; data_status?: string; withheld_count?: number | null; as_of?: string | null; horizons: Record<string, Record<string, { sample_count: number; median_return: number | null; win_rate: number | null; "2x_rate": number | null; rug_rate: number | null; max_drawdown: number | null }>>; }

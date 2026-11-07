@@ -4,10 +4,11 @@ import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import FiniteFloat
 from sqlalchemy import and_, func, select
 
 from smms.alpha.live import SCORE_VERSION
@@ -22,6 +23,7 @@ from smms.observability import freshness_status, metrics, observability, source_
 from smms.radar.domain import CandidateStatus
 from smms.radar.events import event_bus, sse_encode
 from smms.radar.live_forward import performance
+from smms.radar.query import StaleCandidateRead
 from smms.radar.views import candidate_detail, candidates
 
 logger = logging.getLogger(__name__)
@@ -233,21 +235,33 @@ def alpha_statistics(sync, *, now, minimum_quote):
             "matured_1h": count(*cohort), "overall": rates(), "high_score": rates(True)}
 
 
+async def _candidate_read(session, reader):
+    try:
+        return await session.run_sync(reader)
+    except StaleCandidateRead as exc:
+        raise HTTPException(status_code=409, detail={"data_status": "REBUILDING", "reason": str(exc)}) from exc
+
+
 @router.get("")
 async def list_candidates(
     chain: str | None = None,
+    q: str | None = Query(None, max_length=200),
+    view: Literal["all", "high_signal", "watch", "high_risk"] = "all",
+    freshness: Literal["all", "fresh", "stale", "unknown"] = "all",
+    direction: Literal["asc", "desc"] = "desc",
+    include_stale: bool = False,
     status: CandidateStatus | None = None,
-    min_priority: float = Query(0, ge=0, le=100),
+    min_priority: Annotated[FiniteFloat | None, Query(ge=0, le=100)] = None,
     launchpad: str | None = None,
     risk: Literal["UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL"] | None = None,
     age: int | None = Query(None, ge=0, description="Maximum age in seconds"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     sort: Literal["priority", "age", "liquidity", "volume"] = "priority",
-    priority: float | None = Query(None, ge=0, le=100),
-    smart_money: float | None = Query(None, ge=0, le=100),
-    liquidity: float | None = Query(None, ge=0),
-    volume: float | None = Query(None, ge=0),
+    priority: Annotated[FiniteFloat | None, Query(ge=0, le=100)] = None,
+    smart_money: Annotated[FiniteFloat | None, Query(ge=0, le=100)] = None,
+    liquidity: Annotated[FiniteFloat | None, Query(ge=0)] = None,
+    volume: Annotated[FiniteFloat | None, Query(ge=0)] = None,
 ):
     try:
         chain = validate_bsc_chain(chain)
@@ -255,7 +269,7 @@ async def list_candidates(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     settings = get_settings()
     async with session_scope(settings) as session:
-        result = await session.run_sync(
+        result = await _candidate_read(session,
             lambda sync: candidates(
                 sync,
                 settings.radar,
@@ -269,10 +283,10 @@ async def list_candidates(
                 age=age,
                 limit=limit,
                 offset=offset, sort=sort, priority=priority, smart_money=smart_money,
-                liquidity=liquidity, volume=volume,
+                liquidity=liquidity, volume=volume, q=q, direction=direction,
+                view=view, freshness=freshness, include_stale=include_stale,
             )
         )
-        await session.commit()
         return result
 
 
@@ -284,12 +298,11 @@ async def get_candidate(chain: str, token: str):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     settings = get_settings()
     async with session_scope(settings) as session:
-        result = await session.run_sync(
+        result = await _candidate_read(session,
             lambda sync: candidate_detail(
                 sync, settings.radar, settings.bsc_chain_id, chain, token, at=datetime.now(UTC)
             )
         )
-        await session.commit()
     if result is None:
         raise HTTPException(404, "radar candidate not found")
     return result

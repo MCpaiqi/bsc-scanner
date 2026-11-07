@@ -23,7 +23,7 @@ explicit UNKNOWN states. Preserve existing local data and untracked source.
   rule effects; event fanout happens after commit and survives retry without ghosts.
 - [x] R7: SSE reconnect/replay has explicit bounded recovery semantics under bursts.
 - [x] R8: Alpha score range, available evidence, threshold and UI classifications agree.
-- [ ] R9: complete candidate sorting/filtering/pagination, continuously refreshed
+- [x] R9: complete candidate sorting/filtering/pagination, continuously refreshed
   detail/statistics and separate unavailable/error/stale states are demonstrated.
 - [ ] R10: annotations and token/global alerts have explicit scope and visible save results.
 - [ ] R11: evaluation work is bounded by due pending tasks; prices are fetched in
@@ -727,3 +727,56 @@ separate gate; schema creation inside regressions does not prove migration parit
 - R7 is complete at its bounded replay/resnapshot contract. R3 final audit,
   R9/R10 workflow, R11 bounded operation, R12 reproducibility/CI, R13 access and
   R14 full topology/provider acceptance remain OPEN. The overall goal stays active.
+
+
+## Complete candidate browser and continuous research refresh (2026-11-07)
+
+- R9 selection now shares SQL filters, sorting, facets and page selection over the
+  complete candidate subject index. Search includes literal case-insensitive token
+  identity, canonical pair address and platform; all four sort keys have stable
+  ties and ascending/descending support. Counts remain global on empty or
+  out-of-range pages. Only the selected page expands evidence; the505-subject
+  regression hydrates exactly5 rows for offset500/limit50.
+- Selection binds current projection/signal subjects, revision visibility and a
+  single UTC cutoff. Epoch/revision fences fail with HTTP409 REBUILDING if canonical
+  corrections commit during hydration. A real independent PostgreSQL writer can
+  commit its invalidation while the reader is open, and the reader rejects the
+  stale response. GET candidate/detail readers no longer commit read transactions.
+- Known zero and UNKNOWN are distinct. Missing/invalid priority remains UNKNOWN,
+  and an explicitly zero minimum excludes unknown metrics. Finite scientific
+  values preserve small values and three-digit exponents without fixed-scale
+  rounding; unsupported overflow/underflow/nonfinite metrics stay UNKNOWN under
+  the documented browser numeric contract. Missing 5m volume alone may use the
+  legacy volume key; explicit null/unknown/zero never triggers that fallback.
+- The browser requests50-row server pages with global facet counts, all supported
+  filters and sort directions. Query changes reset offsets, abort/discard obsolete
+  reads and recover a shrinking final page. Discovery includes stale observations
+  with explicit freshness filtering; Watch can include unscored non-high-risk
+  subjects without converting unknown scores to zero.
+- Candidate/detail/statistics polling runs every15s and coalesces requests. Draft
+  annotations and their focused DOM node survive ordinary research refreshes.
+  Background failures label retained research stale; strict recovery/HTTP409 hides
+  invalid research. Statistics explicitly distinguish loading, failed reads,
+  rebuilding/unavailable cohorts and genuine CURRENT zero samples. Read time and
+  observation time have separate labels.
+- One fresh read-only review found three Important issues: small-number/exponent
+  normalization, explicit zero priority minimum, and rebuilding statistics shown
+  as current empty results. All three were reproduced RED and corrected in one
+  fix pass; the targeted backend/frontend cases are GREEN. No deferred minors.
+  The plan records all considered scope decisions and their practical costs.
+- Final real PostgreSQL16 verification: **68 passed**, including complete sorting,
+  literal search/global facets, page-bounded hydration, finite/unknown values,
+  separate committed canonical invalidation and existing signal/snapshot reader
+  regressions. Verified zero owned schemas and other DB connections, then stopped
+  only the owned temporary PostgreSQL instance. No provider calls or production
+  data writes occurred; logs and temporary database files remain outside Git.
+- Frontend **62 tests passed**, TypeScript and production build passed. Existing
+  Alpha/CopyAddress act warnings remain. Browser QA with synthetic505-subject
+  data verified page2, search for subject505 with page reset, known-zero vs unknown
+  amounts and a390px card layout. This is local UI acceptance, not live-chain or
+  full-Compose acceptance.
+- Final backend: **768 passed, 35 skipped, 13 existing warnings**. Full Ruff and
+  whitespace checks passed. R9 is complete at the current-state candidate browsing
+  and refresh contract. R3 final audit and R10–R14 remain OPEN; the original goal
+  stays active. Latest user authorization continues verified pushes to
+  origin/codex/research-integrity without merge or deployment.

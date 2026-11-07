@@ -31,6 +31,71 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(() => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
+const clickButton = async (label: string) => {
+  const button = [...host.querySelectorAll("button")].find(item => item.textContent === label)!;
+  expect(button, label).toBeDefined();
+  await act(async () => button.click());
+};
+it("uses global server counts and browses beyond the former 500 cap", async () => {
+  vi.mocked(api.candidates).mockResolvedValue({ candidates: [candidate], count: 1, total: 505,
+    tab_counts: { all: 505, high_signal: 90, watch: 410, high_risk: 5 }, universe_total: 600 });
+  await act(async () => root.render(<RadarPage />));
+  expect(host.querySelector('.tabs')?.textContent).toContain("链上发现505");
+  expect(host.querySelector('.table-footer')?.textContent).toContain("505");
+  await clickButton("下一页");
+  expect(vi.mocked(api.candidates).mock.calls.at(-1)![0].get('offset')).toBe('50');
+  expect(vi.mocked(api.candidates).mock.calls.at(-1)![0].get('limit')).toBe('50');
+});
+it("sends global searches, resets the page and discards obsolete responses", async () => {
+  vi.useFakeTimers();
+  vi.mocked(api.candidates).mockResolvedValue({ candidates: [candidate], count: 1, total: 505 });
+  await act(async () => root.render(<RadarPage />));
+  await clickButton("下一页");
+  let resolveOld!: (value: Awaited<ReturnType<typeof api.candidates>>) => void;
+  vi.mocked(api.candidates).mockReturnValueOnce(new Promise(resolve => { resolveOld = resolve; }));
+  await act(async () => vi.advanceTimersByTime(15000));
+  const input = host.querySelector<HTMLInputElement>('.filters input')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'needle');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await act(async () => vi.advanceTimersByTime(300));
+  const params = vi.mocked(api.candidates).mock.calls.at(-1)![0];
+  expect(params.get('q')).toBe('needle'); expect(params.get('offset')).toBe('0');
+  await act(async () => resolveOld({ candidates: [{ ...candidate, name: 'obsolete page' }], count: 1, total: 505 }));
+  expect(host.querySelector('tbody')?.textContent).not.toContain('obsolete page');
+});
+it("renders server order and distinguishes unknown amounts from zero", async () => {
+  vi.mocked(api.candidates).mockResolvedValue({ candidates: [
+    { ...candidate, name: 'Server first', priority_score: 1, features: { liquidity: 'UNKNOWN' } },
+    { ...candidate, token_address: '0xsecond', name: 'Server second', priority_score: 99, features: { liquidity: 0 } },
+  ], count: 2, total: 2 });
+  await act(async () => root.render(<RadarPage />));
+  const rows = host.querySelectorAll('tbody tr');
+  expect(rows[0].textContent).toContain('Server first');
+  expect(rows[1].textContent).toContain('$0');
+});
+it("recovers the last page when the live result set shrinks", async () => {
+  vi.useFakeTimers();
+  vi.mocked(api.candidates).mockResolvedValue({ candidates: [candidate], count: 1, total: 505 });
+  await act(async () => root.render(<RadarPage />));
+  await clickButton('下一页');
+  vi.mocked(api.candidates).mockResolvedValueOnce({ candidates: [], count: 0, total: 1 });
+  await act(async () => vi.advanceTimersByTime(15000));
+  expect(vi.mocked(api.candidates).mock.calls.at(-1)![0].get('offset')).toBe('0');
+  expect(host.querySelector('tbody tr')?.textContent).toContain(candidate.name);
+});
+it("polls statistics and exposes stale data after failed refresh", async () => {
+  vi.useFakeTimers();
+  await act(async () => root.render(<RadarPage />));
+  vi.mocked(api.livePerformance).mockRejectedValueOnce(new Error('offline'));
+  await act(async () => vi.advanceTimersByTime(15000));
+  expect(api.livePerformance).toHaveBeenCalledTimes(2);
+  expect(host.querySelector('.performance-panel')?.textContent).toContain('上次读取');
+  expect(host.querySelector('.performance-panel')?.textContent).toContain('更新失败');
+  expect(host.querySelector('.performance-metrics')?.textContent).not.toContain('0个');
+});
+
 it("never applies a late event's financial or risk payload over the canonical response", async () => {
   const authoritative = { ...candidate, features: { risk: "HIGH", liquidity: 100 } };
   vi.mocked(api.candidates).mockResolvedValue({ candidates: [authoritative], count: 1, total: 1 });
@@ -180,5 +245,42 @@ it("polls health independently and does not overlap requests or keep timers afte
   await act(async () => vi.advanceTimersByTime(30000));
   expect(api.health).toHaveBeenCalledTimes(2);
   expect(api.candidates).toHaveBeenCalledTimes(candidateCalls);
+  root = createRoot(host);
+});
+
+
+it("sends all four sorts, direction, view and risk filters to the complete server query", async () => {
+  await act(async () => root.render(<RadarPage />));
+  const select = host.querySelector<HTMLSelectElement>('.sort-field select')!;
+  for (const sort of ['priority', 'age', 'liquidity', 'volume']) {
+    await act(async () => { select.value = sort; select.dispatchEvent(new Event('change', { bubbles: true })); });
+    expect(vi.mocked(api.candidates).mock.calls.at(-1)![0].get('sort')).toBe(sort);
+  }
+  const direction = host.querySelector<HTMLSelectElement>('.candidate-filters select')!;
+  await act(async () => { direction.value = 'asc'; direction.dispatchEvent(new Event('change', { bubbles: true })); });
+  expect(vi.mocked(api.candidates).mock.calls.at(-1)![0].get('direction')).toBe('asc');
+  const highRisk = [...host.querySelectorAll('.tabs button')].find(item => item.textContent?.startsWith('高风险')) as HTMLButtonElement;
+  await act(async () => highRisk.click());
+  expect(vi.mocked(api.candidates).mock.calls.at(-1)![0].get('view')).toBe('high_risk');
+  expect(vi.mocked(api.candidates).mock.calls.at(-1)![0].get('offset')).toBe('0');
+});
+
+it("coalesces slow statistics reads, aborts on unmount and shows measured zero", async () => {
+  vi.useFakeTimers();
+  let release!: (value: Awaited<ReturnType<typeof api.livePerformance>>) => void;
+  vi.mocked(api.livePerformance).mockReturnValueOnce(new Promise(resolve => { release = resolve; }));
+  await act(async () => root.render(<RadarPage />));
+  await act(async () => vi.advanceTimersByTime(30000));
+  expect(api.livePerformance).toHaveBeenCalledOnce();
+  await act(async () => release({ mode: 'FORWARD_OBSERVATION', data_status: 'CURRENT', horizons: { '5m': { HIGH_SIGNAL: {
+    sample_count: 0, median_return: 0, win_rate: null, '2x_rate': null, rug_rate: null, max_drawdown: null,
+  } } } }));
+  expect(host.querySelector('.performance-metrics')?.textContent).toContain('0个');
+  expect(host.querySelector('.performance-metrics')?.textContent).toContain('0.0%');
+  const signal = vi.mocked(api.livePerformance).mock.calls.at(-1)![0]!;
+  await act(async () => root.unmount());
+  expect(signal.aborted).toBe(true);
+  await act(async () => vi.advanceTimersByTime(30000));
+  expect(api.livePerformance).toHaveBeenCalledOnce();
   root = createRoot(host);
 });

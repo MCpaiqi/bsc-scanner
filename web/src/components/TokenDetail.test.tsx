@@ -23,6 +23,28 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(() => root.unmount()); host.remove(); vi.restoreAllMocks(); });
 
+it("polls research while preserving the focused draft and marks failed refresh stale", async () => {
+  vi.useFakeTimers();
+  await act(async () => root.render(<TokenDetail candidate={candidate} onClose={() => {}} />));
+  const note = host.querySelector('textarea')!; note.focus();
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(note, 'draft');
+    note.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  vi.mocked(api.candidate).mockRejectedValueOnce(new Error('offline'));
+  await act(async () => vi.advanceTimersByTime(15000));
+  expect(api.candidate).toHaveBeenCalledTimes(2);
+  expect(api.annotation).toHaveBeenCalledOnce();
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain('更新失败');
+  expect(host.querySelector('textarea')).toBe(note);
+  expect(document.activeElement).toBe(note);
+  expect(note.value).toBe('draft');
+  await act(async () => vi.advanceTimersByTime(15000));
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  expect(note.value).toBe('draft');
+  vi.useRealTimers();
+});
+
 it("refreshes research after a stream reset without reloading annotations or discarding the note draft", async () => {
   vi.mocked(api.annotation).mockResolvedValue({ note: "saved" });
   await act(async () => root.render(<TokenDetail candidate={candidate} refreshKey={0} onClose={() => {}} />));
