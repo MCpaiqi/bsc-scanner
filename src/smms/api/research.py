@@ -10,6 +10,7 @@ from smms.db.models import (
     BacktestDatasetRow,
     ForwardEvaluationJob,
     LiveSignalObservation,
+    RadarEventOutbox,
     ResearchEpoch,
     ResearchRebuildJob,
     ResearchState,
@@ -18,6 +19,18 @@ from smms.research.lineage import row_values
 from smms.research.publication import MODELS
 
 router = APIRouter(prefix="/api/research", tags=["research-audit"])
+
+
+@router.get("/event-deliveries")
+async def event_deliveries(limit: int = Query(50, ge=1, le=200), before_id: int | None = Query(None, ge=1)):
+    query = select(RadarEventOutbox).where(RadarEventOutbox.chain == "bsc")
+    if before_id is not None:
+        query = query.where(RadarEventOutbox.id < before_id)
+    async with session_scope(get_settings()) as session:
+        rows = (await session.scalars(query.order_by(RadarEventOutbox.id.desc()).limit(limit + 1)
+                                      .execution_options(populate_existing=True))).all()
+    return {"audit_only": True, "events": [row_values(row) for row in rows[:limit]],
+            "next_cursor": rows[limit - 1].id if len(rows) > limit else None}
 
 
 @router.get("/forward-jobs")

@@ -514,7 +514,9 @@ def test_sampled_delayed_discovery_keeps_baseline_at_original_cutoff(research_se
     projection = research_session.scalar(select(RadarFeatureObservation).where(
         RadarFeatureObservation.id == observation.t0_snapshot_json["projection_id"],
     ))
-    assert projection.as_of.replace(tzinfo=T0.tzinfo) == T0
+    from smms.evaluation import utc
+
+    assert utc(projection.as_of) == T0
     assert projection.features_json["buy_count_5m"] == "UNKNOWN"
 
 

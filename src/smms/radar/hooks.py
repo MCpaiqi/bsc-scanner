@@ -1,186 +1,149 @@
-"""Small adapter hooks; all mutations share the ingestion transaction."""
+"""Projection effects share their canonical ingestion transaction and outbox."""
 
-from sqlalchemy import select
+from datetime import UTC, datetime
+
+from sqlalchemy import and_, or_, select
 
 from smms.config.settings import get_settings
+from smms.db.models import MarketEvent, Pair, RadarCandidate, Token
+from smms.evaluation import utc
 
 from .audit import AuditQueue
 from .engine import RadarEngine
+from .outbox import enqueue_event
+
+
+def _candidate_state_for_rows(sync, rows):
+    subjects = set()
+    for row in rows:
+        addresses = (row.token0_address, row.token1_address) if isinstance(row, Pair) else (
+            getattr(row, "token_address", None),)
+        chain = "bsc" if isinstance(row, (Pair, MarketEvent)) else getattr(row, "chain", None) or "bsc"
+        subjects.update((chain, str(address).lower()) for address in addresses if address)
+    if not subjects:
+        return {}
+    by_chain = {}
+    for chain, address in subjects:
+        by_chain.setdefault(chain, set()).add(address)
+
+    return {candidate.id: {"status": candidate.status.value, "features": dict(candidate.features_json or {}),
+                           "signal_id": candidate.latest_signal_id}
+            for candidate in sync.scalars(select(RadarCandidate).join(Token, Token.id == RadarCandidate.token_id)
+                .where(or_(*(and_(Token.chain == chain, Token.address.in_(addresses))
+                             for chain, addresses in by_chain.items())))
+                .execution_options(populate_existing=True))}
 
 
 def _candidate_state_for_row(sync, row):
-    """Capture only candidates that a row can actually change.
-
-    This hook is invoked on every canonical BSC log.  Reading the entire
-    candidate table here makes catch-up cost grow with unrelated history and
-    unnecessarily lengthens the transaction that owns ingestion locks.
-    """
-    from smms.db.models import Pair, RadarCandidate, Token
-
-    if isinstance(row, Pair):
-        addresses = (row.token0_address, row.token1_address)
-        chain = "bsc"
-    else:
-        addresses = (getattr(row, "token_address", None),)
-        chain = getattr(row, "chain", None) or "bsc"
-    canonical_addresses = tuple(
-        str(address).lower() for address in addresses if address
-    )
-    if not canonical_addresses:
-        return {}
-    return {
-        candidate.id: {
-            "status": candidate.status.value,
-            "features": dict(candidate.features_json or {}),
-            "signal_id": candidate.latest_signal_id,
-        }
-        for candidate in sync.scalars(
-            select(RadarCandidate)
-            .join(Token, Token.id == RadarCandidate.token_id)
-            .where(Token.chain == chain, Token.address.in_(canonical_addresses))
-        ).all()
-    }
+    return _candidate_state_for_rows(sync, [row])
 
 
-async def project(session, row):
+def _apply_effects(sync, candidates, before, *, at):
+    from .alerts import evaluate_enabled_rules
+    from .live_forward import record_observation
+    from .projection import projection_for
+
+    for candidate in candidates:
+        projection = projection_for(sync, candidate)
+        if candidate.projection_id is not None and projection is None:
+            continue  # A concurrent reorg fenced the just-computed projection.
+        if candidate.status.value != "REJECTED" and candidate.features_json:
+            AuditQueue(sync).schedule_candidate(candidate, now=at)
+        token = sync.get(Token, candidate.token_id)
+        if token is None:
+            continue
+        previous = before.get(candidate.id)
+        kinds = []
+        if previous is None:
+            record_observation(sync, candidate, "MARKET_BASELINE", at=candidate.discovered_at,
+                               reason="RADAR_ELIGIBLE_UNIVERSE_SAMPLE")
+            kinds.append("CANDIDATE_DISCOVERED")
+        else:
+            old, new = previous["features"], candidate.features_json or {}
+            if (previous["status"] != candidate.status.value or previous["signal_id"] != candidate.latest_signal_id
+                    or old != new):
+                kinds.append("CANDIDATE_UPDATED")
+            old_wallets, new_wallets = old.get("known_smart_wallet_count"), new.get("known_smart_wallet_count")
+            try:
+                entry = new_wallets not in {None, "UNKNOWN"} and (
+                    old_wallets in {None, "UNKNOWN"} or int(new_wallets) > int(old_wallets))
+            except (TypeError, ValueError):
+                entry = False
+            if entry:
+                kinds.append("SMART_MONEY_ENTRY")
+            if old.get("risk") != new.get("risk"):
+                kinds.append("RISK_CHANGED")
+            if previous["signal_id"] != candidate.latest_signal_id:
+                kinds.append("SIGNAL_CHANGED")
+            if old.get("early_buyer_count") != new.get("early_buyer_count"):
+                kinds.append("EARLY_BUYER_UPDATE")
+        for kind in kinds:
+            enqueue_event(sync, kind, chain=token.chain, token=token.address, occurred_at=at,
+                          effect_key=f"projection:{candidate.id}:{candidate.projection_id}:{kind}",
+                          data={"token_address": token.address, "chain": token.chain,
+                                "status": candidate.status.value, "priority_score": float(candidate.priority_score),
+                                "features": candidate.features_json or {}, "signal_id": candidate.latest_signal_id,
+                                "projection_id": candidate.projection_id,
+                                "source_epoch": projection.source_epoch if projection else 0, "as_of": at})
+        for alert in evaluate_enabled_rules(sync, chain=token.chain, token_address=token.address,
+                                             state=candidate.features_json or {}, at=at):
+            enqueue_alert(sync, chain=token.chain, token=token.address, alert=alert, at=at)
+
+
+def enqueue_alert(sync, *, chain, token, alert, at=None):
+    return enqueue_event(sync, "ALERT_TRIGGERED", chain=chain, token=token, data=alert,
+                         effect_key=f"alert:{alert['history_id']}", occurred_at=at)
+
+
+async def project(session, row, *, at=None):
     settings = get_settings()
-    alert_events = []
-    changes = []
+    at = utc(at or datetime.now(UTC))
 
     def apply(sync):
-        from smms.db.models import Token
-        from smms.radar.alerts import evaluate_enabled_rules
-
         engine = RadarEngine(sync, settings.radar, chain_id=settings.bsc_chain_id)
         before = _candidate_state_for_row(sync, row)
-        result = engine.ingest(row)
+        result = engine.ingest(row, at=at)
         if not result:
-            result = engine.refresh_for_event(row)
-        for candidate in result:
-            if candidate.status.value != "REJECTED" and candidate.features_json:
-                AuditQueue(sync).schedule_candidate(candidate)
-            token = sync.get(Token, candidate.token_id)
-            if token:
-                previous = before.get(candidate.id)
-                if previous is None:
-                    from smms.radar.live_forward import record_observation
-
-                    record_observation(
-                        sync,
-                        candidate,
-                        "MARKET_BASELINE",
-                        at=candidate.discovered_at,
-                        reason="RADAR_ELIGIBLE_UNIVERSE_SAMPLE",
-                    )
-                    changes.append(("CANDIDATE_DISCOVERED", token.chain, token.address, candidate))
-                else:
-                    old = previous["features"]
-                    new = candidate.features_json or {}
-                    changed = (
-                        previous["status"] != candidate.status.value
-                        or previous["signal_id"] != candidate.latest_signal_id
-                        or old != new
-                    )
-                    if changed:
-                        changes.append(("CANDIDATE_UPDATED", token.chain, token.address, candidate))
-                    old_wallets = old.get("known_smart_wallet_count")
-                    new_wallets = new.get("known_smart_wallet_count")
-                    try:
-                        smart_money_entry = (
-                            new_wallets not in {None, "UNKNOWN"}
-                            and (old_wallets in {None, "UNKNOWN"} or int(new_wallets) > int(old_wallets))
-                        )
-                    except (TypeError, ValueError):
-                        smart_money_entry = False
-                    if smart_money_entry:
-                        changes.append(("SMART_MONEY_ENTRY", token.chain, token.address, candidate))
-                    if old.get("risk") != new.get("risk"):
-                        changes.append(("RISK_CHANGED", token.chain, token.address, candidate))
-                    if previous["signal_id"] != candidate.latest_signal_id:
-                        changes.append(("SIGNAL_CHANGED", token.chain, token.address, candidate))
-                    if old.get("early_buyer_count") != new.get("early_buyer_count"):
-                        changes.append(("EARLY_BUYER_UPDATE", token.chain, token.address, candidate))
-                alert_events.extend(
-                    (token.chain, token.address, alert)
-                    for alert in evaluate_enabled_rules(
-                        sync,
-                        chain=token.chain,
-                        token_address=token.address,
-                        state=candidate.features_json or {},
-                    )
-                )
+            result = engine.refresh_for_event(row, at=at)
+        _apply_effects(sync, result, before, at=at)
         return result
 
-    result = await session.run_sync(apply)
-    # Publish outside the DB mutation path so ingestion is never blocked by clients.
-    try:
-        from smms.radar.events import publish_domain_event
-
-        for event_type, chain, address, candidate in changes:
-            await publish_domain_event(
-                event_type,
-                chain=chain,
-                token=address,
-                data={
-                    "token_address": address,
-                    "chain": chain,
-                    "status": candidate.status.value,
-                    "priority_score": float(candidate.priority_score),
-                    "features": candidate.features_json or {},
-                    "signal_id": candidate.latest_signal_id,
-                },
-            )
-        for chain, token, alert in alert_events:
-            await publish_domain_event(
-                "ALERT_TRIGGERED", chain=chain, token=token, data=alert
-            )
-    except (LookupError, TypeError, ValueError, RuntimeError):
-        # Event delivery is best-effort; canonical state remains durable.
-        pass
-    return result
+    return await session.run_sync(apply)
 
 
 async def revalidate(session, raw):
     settings = get_settings()
-    await session.run_sync(
-        lambda sync: RadarEngine(
-            sync, settings.radar, chain_id=settings.bsc_chain_id
-        ).revalidate_raw(raw)
-    )
-
-
-async def refresh_deferred_rows(session, rows):
-    """Refresh Radar once per token after a bounded ingestion chunk.
-
-    Catch-up persists canonical Raw/Market/Trade facts first and coalesces
-    repeated swaps for the same token.  This keeps Radar feature queries out
-    of the per-log critical path while still materializing candidates and
-    latest features before the chunk checkpoint is committed.
-    """
-    settings = get_settings()
+    at = datetime.now(UTC)
 
     def apply(sync):
         engine = RadarEngine(sync, settings.radar, chain_id=settings.bsc_chain_id)
-        pair_rows = {}
-        event_rows = {}
-        for row in rows:
-            token_address = getattr(row, "token_address", None)
-            if token_address:
-                event_rows[str(token_address).lower()] = row
-            else:
-                for address in (
-                    getattr(row, "token0_address", None),
-                    getattr(row, "token1_address", None),
-                ):
-                    if address:
-                        pair_rows[str(address).lower()] = row
-        # PairCreated rows establish candidates; latest event rows then refresh
-        # their features. Keep both when a token appears in one chunk's pair
-        # admission and first swap.
-        selected = list(pair_rows.values()) + list(event_rows.values())
-        for row in selected:
-            result = engine.ingest(row)
-            if not result:
-                engine.refresh_for_event(row)
+        candidates = engine.candidates_for_raw(raw)
+        before = {candidate.id: {"status": candidate.status.value,
+                                 "features": dict(candidate.features_json or {}),
+                                 "signal_id": candidate.latest_signal_id} for candidate in candidates}
+        engine.revalidate_raw(raw, at=at, candidates=candidates)
+        _apply_effects(sync, candidates, before, at=at)
 
     await session.run_sync(apply)
+
+
+async def refresh_deferred_rows(session, rows, *, at=None):
+    """Retain every proof, then project/effect each affected candidate once."""
+    settings = get_settings()
+    at = utc(at or datetime.now(UTC))
+
+    def apply(sync):
+        engine = RadarEngine(sync, settings.radar, chain_id=settings.bsc_chain_id)
+        before = _candidate_state_for_rows(sync, rows)
+        affected = set(before)
+        for row in rows:
+            affected.update(candidate.id for candidate in engine.ingest(row, at=at, refresh=False))
+        candidates = []
+        for candidate_id in sorted(affected):
+            candidate = sync.get(RadarCandidate, candidate_id)
+            engine.refresh(candidate, at=at)
+            candidates.append(candidate)
+        _apply_effects(sync, candidates, before, at=at)
+        return candidates
+
+    return await session.run_sync(apply)

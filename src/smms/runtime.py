@@ -515,6 +515,26 @@ async def run_radar() -> None:
         await asyncio.sleep(1)
 
 
+async def run_event_relay() -> None:
+    from smms.radar.outbox import relay_once
+
+    settings = get_settings()
+    while True:
+        status, details = "RUNNING", {}
+        try:
+            details = await relay_once(lambda: session_scope(settings))
+            if details["failed"]:
+                status = "DEGRADED"
+        except (SQLAlchemyError, OSError, ValueError) as exc:
+            status, details = "DEGRADED", {"reason": type(exc).__name__}
+            logging.getLogger(__name__).warning("event relay retry reason=%s", type(exc).__name__)
+        try:
+            await heartbeat("event-relay", status, details=details)
+        except (SQLAlchemyError, OSError):
+            pass
+        await asyncio.sleep(1)
+
+
 async def run_forward() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     settings = get_settings()
@@ -638,7 +658,7 @@ async def run_research_rebuild() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("worker", choices=("bsc-ingestion", "bsc-live-tail", "radar-worker", "forward-worker", "alpha-coverage", "research-rebuild"))
+    parser.add_argument("worker", choices=("bsc-ingestion", "bsc-live-tail", "radar-worker", "forward-worker", "alpha-coverage", "research-rebuild", "event-relay"))
     worker = parser.parse_args().worker
     asyncio.run({
         "bsc-ingestion": run_bsc,
@@ -647,6 +667,7 @@ def main() -> None:
         "forward-worker": run_forward,
         "alpha-coverage": run_alpha_coverage,
         "research-rebuild": run_research_rebuild,
+        "event-relay": run_event_relay,
     }[worker]())
 
 

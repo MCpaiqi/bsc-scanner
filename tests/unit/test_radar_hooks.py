@@ -48,7 +48,7 @@ async def test_project_reads_only_candidates_for_the_event_token(monkeypatch) ->
         with Session(engine) as session:
             target = _candidate(session, "0xtarget")
             _candidate(session, "0xunrelated")
-            monkeypatch.setattr("smms.radar.hooks.RadarEngine.ingest", lambda _engine, _row: [target])
+            monkeypatch.setattr("smms.radar.hooks.RadarEngine.ingest", lambda _engine, _row, **_kwargs: [target])
 
             async def no_publish(*_args, **_kwargs) -> None:
                 return None
@@ -83,12 +83,12 @@ async def test_refresh_deferred_rows_deduplicates_by_token(monkeypatch) -> None:
         with Session(engine) as session:
             _candidate(session, "0xtarget")
 
-            def refresh(_engine, row, *, at=None):
-                calls.append(row.token_address)
+            def refresh(_engine, candidate, *, at=None):
+                calls.append(session.get(Token, candidate.token_id).address)
                 return []
 
             monkeypatch.setattr("smms.radar.hooks.RadarEngine.ingest", lambda *_args, **_kwargs: [])
-            monkeypatch.setattr("smms.radar.hooks.RadarEngine.refresh_for_event", refresh)
+            monkeypatch.setattr("smms.radar.hooks.RadarEngine.refresh", refresh)
             rows = [
                 SimpleNamespace(token_address="0xtarget", chain="bsc"),
                 SimpleNamespace(token_address="0xtarget", chain="bsc"),

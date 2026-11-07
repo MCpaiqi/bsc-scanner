@@ -17,7 +17,7 @@ from smms.radar.alerts import (
     evaluate_and_notify,
     validate_rule_payload,
 )
-from smms.radar.events import event_bus
+from smms.radar.hooks import enqueue_alert
 
 router = APIRouter(prefix="/api/radar", tags=["analyst-workflow"])
 
@@ -243,14 +243,11 @@ async def evaluate_alert_rule(rule_id: int, payload: RuleEvaluationPayload):
                 state=payload.state,
             )
         )
-        await session.commit()
         if result.get("notified") and "browser" in row.notification_channels:
-            await event_bus.publish(
-                "ALERT_TRIGGERED",
-                chain=chain,
-                token=token_address,
-                data={"rule_id": row.id, "history_id": result.get("history_id")},
-            )
+            await session.run_sync(lambda sync: enqueue_alert(
+                sync, chain=chain, token=token_address, alert={"rule_id": row.id, **result},
+            ))
+        await session.commit()
         return result
 
 

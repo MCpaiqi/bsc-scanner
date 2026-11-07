@@ -24,6 +24,7 @@ def _research_visibility(execute_state):
 def _immutable_research_inputs(session, _context, _instances):
     from .entities import BacktestDataset, BacktestDatasetRow
     from .live import LiveSignalObservation, LiveSignalOutcome
+    from .outbox import ENVELOPE_FIELDS, RadarEventOutbox
     from .research import SnapshotLineageMixin
     from .runtime import EvidenceObservationRecord
 
@@ -31,6 +32,10 @@ def _immutable_research_inputs(session, _context, _instances):
         raise ValueError("published dataset artifacts are immutable; retain audit history")
 
     for row in session.dirty:
+        if isinstance(row, RadarEventOutbox) and any(
+            inspect(row).attrs[name].history.has_changes() for name in ENVELOPE_FIELDS
+        ):
+            raise ValueError("committed event envelopes are immutable")
         if isinstance(row, (EvidenceObservationRecord, BacktestDatasetRow)) and session.is_modified(row, include_collections=False):
             raise ValueError("stored evidence observations are immutable; append a new observation")
         if isinstance(row, SnapshotLineageMixin):
@@ -40,6 +45,8 @@ def _immutable_research_inputs(session, _context, _instances):
                           for column in state.mapper.column_attrs if column.key != "snapshot_status")
             if changed or (status.has_changes() and row.snapshot_status not in {"SUPERSEDED", "INVALIDATED"}):
                 raise ValueError("published research inputs and results are immutable; append a revision")
+    if any(isinstance(row, RadarEventOutbox) for row in session.deleted):
+        raise ValueError("committed event history is immutable; retain delivery audit")
 
 
 class TimestampMixin:

@@ -1416,6 +1416,7 @@ def _worker_health(sync, *, now: datetime) -> dict[str, dict[str, object]]:
         "bsc-ingestion": "bsc_ingestion",
         "bsc-market-enrichment": "bsc_market_enrichment",
         "radar-worker": "radar_worker",
+        "event-relay": "event_relay",
         "forward-worker": "forward_worker",
     }
     # A worker type can have rows from stopped/restarted instances.  Always

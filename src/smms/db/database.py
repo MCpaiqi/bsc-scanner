@@ -1,6 +1,7 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from asyncpg import PostgresError
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
@@ -33,7 +34,7 @@ async def check_database(settings: Settings | None = None) -> str:
         async with get_engine(settings).connect() as connection:
             await connection.execute(text("SELECT 1"))
         return "ok"
-    except (ModuleNotFoundError, OSError, SQLAlchemyError):
+    except (ModuleNotFoundError, OSError, SQLAlchemyError, PostgresError):
         return "unavailable"
 
 

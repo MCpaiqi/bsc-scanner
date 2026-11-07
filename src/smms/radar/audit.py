@@ -288,11 +288,14 @@ class AuditWorker:
         # claim() locks the durable queue row. Release it before the audit
         # updates its candidate so canonical ingestion can coalesce that same
         # job without taking the inverse candidate -> job lock order.
-        self.session.commit()
         self._publish_lifecycle("AUDIT_STARTED", job, result="RUNNING")
+        self.session.commit()
+        job_id = job.id
         try:
             (handler or self._run_audit)(job)
         except Exception as exc:  # noqa: BLE001 - persist every worker failure
+            self.session.rollback()
+            job = self.session.get(RadarAuditJob, job_id, populate_existing=True)
             code = getattr(exc, "audit_error_code", AuditErrorCode.INTERNAL_ERROR)
             try:
                 code = AuditErrorCode(code)
@@ -308,7 +311,6 @@ class AuditWorker:
     def _publish_lifecycle(
         self, event_type: str, job: RadarAuditJob, *, result: str
     ) -> None:
-        from smms.radar.events import publish_domain_event_nowait
 
         completed = job.completed_at if event_type != "AUDIT_STARTED" else None
         duration = (
@@ -316,7 +318,7 @@ class AuditWorker:
             if completed is not None and job.started_at is not None
             else None
         )
-        publish_domain_event_nowait(
+        self._enqueue(job,
             event_type,
             chain=job.chain,
             token=job.token_address,
@@ -331,6 +333,12 @@ class AuditWorker:
             },
         )
 
+    def _enqueue(self, job, event_type, **payload):
+        from smms.radar.outbox import enqueue_event
+
+        return enqueue_event(self.session, event_type, **payload,
+                             effect_key=f"audit:{job.id}:{job.attempt_count}:{event_type}")
+
     def _run_audit(self, job: RadarAuditJob) -> None:
         from smms.config.settings import get_settings
         from smms.external_evidence import (
@@ -340,7 +348,6 @@ class AuditWorker:
         )
         from smms.radar.alerts import evaluate_enabled_rules
         from smms.radar.engine import RadarEngine
-        from smms.radar.events import publish_domain_event_nowait
         from smms.radar.live_forward import record_observation
         from smms.radar.live_signal import LiveSignalService
         from smms.risk.aggregation import RiskAggregationService
@@ -412,7 +419,7 @@ class AuditWorker:
         after_features = dict(candidate.features_json or {})
         changed = before_features != after_features or candidate.status != before_status
         if changed:
-            publish_domain_event_nowait(
+            self._enqueue(job,
                 "CANDIDATE_UPDATED",
                 chain=job.chain,
                 token=job.token_address,
@@ -428,21 +435,21 @@ class AuditWorker:
             new_wallets not in {None, "UNKNOWN"}
             and (old_wallets in {None, "UNKNOWN"} or int(new_wallets) > int(old_wallets))
         ):
-            publish_domain_event_nowait(
+            self._enqueue(job,
                 "SMART_MONEY_ENTRY",
                 chain=job.chain,
                 token=job.token_address,
                 data={"known_smart_wallet_count": new_wallets, "features": after_features},
             )
         if before_features.get("risk") != after_features.get("risk"):
-            publish_domain_event_nowait(
+            self._enqueue(job,
                 "RISK_CHANGED",
                 chain=job.chain,
                 token=job.token_address,
                 data={"risk": after_features.get("risk"), "features": after_features},
             )
         if before_signal != candidate.latest_signal_id:
-            publish_domain_event_nowait(
+            self._enqueue(job,
                 "SIGNAL_CHANGED",
                 chain=job.chain,
                 token=job.token_address,
@@ -459,9 +466,6 @@ class AuditWorker:
             state=after_features,
             at=now,
         ):
-            publish_domain_event_nowait(
-                "ALERT_TRIGGERED",
-                chain=job.chain,
-                token=job.token_address,
-                data=alert,
-            )
+            from smms.radar.hooks import enqueue_alert
+
+            enqueue_alert(self.session, chain=job.chain, token=job.token_address, alert=alert, at=now)

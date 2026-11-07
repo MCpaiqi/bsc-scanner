@@ -19,7 +19,7 @@ explicit UNKNOWN states. Preserve existing local data and untracked source.
   UNKNOWN; pending work survives downtime; result versions and denominators are explicit.
 - [x] R5: forward endpoints respect a bounded time tolerance and canonical facts;
   drawdown uses price / running peak - 1; historical and live evaluation agree.
-- [ ] R6: normal and deferred candidate projections have equivalent audit/baseline/
+- [x] R6: normal and deferred candidate projections have equivalent audit/baseline/
   rule effects; event fanout happens after commit and survives retry without ghosts.
 - [ ] R7: SSE reconnect/replay has explicit bounded recovery semantics under bursts.
 - [x] R8: Alpha score range, available evidence, threshold and UI classifications agree.
@@ -601,3 +601,78 @@ separate gate; schema creation inside regressions does not prove migration parit
   queries and old compatibility paths still need explicit review before closing
   that requirement. R6/R7 event projection/outbox/SSE, R9/R10 workflows and R11–R14
   operation/reproducibility/access/Compose acceptance remain active.
+
+## Transactional Radar effects and durable event relay (2026-11-07)
+
+- R6 implementation now shares final-state effects across normal and deferred
+  ingestion. Deferred chunks attach every eligible canonical proof before one
+  refresh per affected candidate; the previous last-row selection lost earlier
+  qualifying events. Both routes schedule audit work, retain the first sampled
+  discovery-time baseline and evaluate enabled rules. Intermediate refreshes remain
+  coalesced in the deferred route. Reorg revalidation also records the withdrawn
+  candidate's update through the same effects boundary.
+- Alembic0044 adds RadarEventOutbox. Immutable original event IDs, type, subject,
+  payload and occurrence time are inserted in the owning database transaction.
+  Delivery state is separate. Business rollback leaves no sendable envelope;
+  payloads are copied before later ORM changes. Duplicate effect keys must refer
+  to the same payload. Downgrade refuses to discard any event/delivery history.
+- Audit-start is committed atomically with its claimed job, before releasing the
+  job-row lock. Failed audit computation rolls back its whole work transaction
+  before recording failure, recovering even a failed SQLAlchemy session and
+  discarding partial result/events. Caller rollback after success retains only the
+  already-committed start. Audit lifecycle/feature events and manual rule delivery
+  use the outbox; production database mutation callers no longer dispatch
+  fire-and-forget tasks. The unused nowait mutation escape hatch was removed.
+- The event-relay role/Compose service claims bounded batches with SKIP LOCKED,
+  commits claims before networking and uses 60-second expiring lease tokens to
+  fence completion/retry. Failed transports persist only safe exception class
+  codes with bounded backoff. Cancellation leaves a recoverable committed lease.
+  Local success followed by Redis failure retries the same envelope/event ID;
+  delivery is at least once. DELIVERED records transport publication, not browser
+  receipt. Historical transition payloads are hints to refetch current canonical
+  state; SSE disconnect/replay remains R7.
+- Read-only /api/research/event-deliveries provides bounded cursor pagination of
+  envelopes and attempts/leases/status. Worker heartbeat/source health includes
+  event-relay. Deployment instructions now name the actual Compose services and
+  describe event ownership, retry, duplicate IDs and migration limits.
+- One fresh read-only review was interrupted by the user's pause and resumed as
+  the same review. It found a manual-alert channel regression: in-app-only or
+  webhook-only rules would enqueue browser SSE messages. RED tests reproduced
+  both cases; preserving the browser-channel guard made all three channel cases
+  pass. No additional P0/P1/P2 findings were reported in that review.
+- The pause preserved uncommitted source. Verification handles were no longer
+  present on resume; saved terminal logs proved 727 backend checks and 63 selected
+  PostgreSQL checks passed. The new migration test's singular research_state
+  table name failed; it was corrected to research_states with an explicit fixture
+  upsert. Those earlier runs are not substituted for final verification.
+- Docker Desktop could not restart because its temporary sailor-ingest.sock could
+  not be opened. Automatic approval rejected stopping that failed startup and
+  deleting its temporary IPC file, reporting only blocked by policy. That action
+  was not retried. Subsequent verification uses an independent temporary WSL
+  PostgreSQL16 cluster and locally extracted Redis7 packages; system services,
+  Docker data/configuration and provider credentials are not modified.
+- That non-UTC PostgreSQL instance exposed a test assertion that replaced timezone
+  information instead of converting the instant. The stored baseline remained at
+  the correct original cutoff; the assertion now uses the shared UTC conversion.
+  A separate default-environment health test exposed asyncpg authentication errors
+  escaping check_database. A RED driver-error regression now requires unavailable,
+  and the narrow PostgresError catch fixes the endpoint failure. The paper-mode
+  API test stubs infrastructure checks instead of contacting developer services.
+- Final PostgreSQL/Redis selection: **69 passed** on an independent PostgreSQL16
+  instance with a non-UTC server timezone and Redis7. The real Redis test starts
+  a separate API consumer process and proves a rolled-back envelope stays private
+  while a committed envelope arrives with the original ID/body. Migration0044
+  upgrades from0043, preserves source epoch7, permits an empty downgrade and
+  refuses loss of committed history. Claims across independent connections skip
+  locked rows; a publisher can acquire its claim row from another connection,
+  proving the relay releases DB locks before networking.
+- Cleanup confirmed zero owned schemas, no other verification DB connections and
+  no API test subscriber, then stopped only the temporary PostgreSQL and Redis
+  instances. Temporary packages/data/logs remain for audit. The Docker startup
+  fault remains an environment limitation; this does not constitute R14 full
+  Compose deployment/restart acceptance.
+- Final backend run: **732 passed, 33 skipped, 13 existing warnings**. Full Ruff,
+  whitespace, Compose configuration and the event-relay CLI role checks passed.
+  Alembic0044 is the sole head; offline upgrade SQL generated 1383 lines. R6 is
+  complete at its final-state/committed-event scope. R3 final audit, R7 reconnect,
+  R9/R10 workflows and R11–R14 remain OPEN; the original programme stays active.

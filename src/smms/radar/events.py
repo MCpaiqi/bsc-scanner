@@ -185,17 +185,6 @@ async def publish_domain_event(
     return event
 
 
-def publish_domain_event_nowait(
-    event_type: str, *, chain: str, token: str, data: Any = None
-) -> None:
-    """Dispatch from synchronous database workers without blocking their transaction."""
-    coroutine = publish_domain_event(event_type, chain=chain, token=token, data=data)
-    try:
-        asyncio.get_running_loop().create_task(coroutine)
-    except RuntimeError:
-        asyncio.run(coroutine)
-
-
 async def subscribe_redis(stop: asyncio.Event | None = None) -> None:
     """Bridge one Redis subscription into this instance's local SSE bus."""
     from redis.asyncio import Redis

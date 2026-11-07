@@ -43,6 +43,7 @@ from .live import (
     LiveSignalOutcome,
 )
 from .market import AlphaSnapshot, TokenMarketSnapshot
+from .outbox import RadarEventOutbox
 from .radar import (
     RadarCandidate,
     RadarCandidateEvidence,
@@ -89,6 +90,7 @@ __all__ = [
     "RadarCandidate",
     "RadarCandidateEvidence",
     "RadarCandidateHistory",
+    "RadarEventOutbox",
     "RadarFeatureObservation",
     "RawChainEvent",
     "RawChainRecord",

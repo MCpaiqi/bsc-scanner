@@ -185,7 +185,7 @@ class RadarEngine:
             return "MARKET_ACTIVITY"
         return None
 
-    def ingest(self, row, *, at=None):
+    def ingest(self, row, *, at=None, refresh=True):
         at = utc(at or datetime.now(UTC))
         self.session.flush()
         kind = self.source_kind(row)
@@ -269,7 +269,8 @@ class RadarEngine:
                 proof.raw_event_id = raw.id if raw else None
                 proof.block_hash = raw.block_hash if raw else None
             self.session.flush()
-            self.refresh(candidate, at=at)
+            if refresh:
+                self.refresh(candidate, at=at)
             results.append(candidate)
         return results
 
@@ -478,8 +479,7 @@ class RadarEngine:
         for candidate in self.session.scalars(select(RadarCandidate).order_by(RadarCandidate.id)):
             self.refresh(candidate, at=at)
 
-    def revalidate_raw(self, raw, *, at=None):
-        at = utc(at or datetime.now(UTC))
+    def candidates_for_raw(self, raw):
         ids = set(
             self.session.scalars(
                 select(RadarCandidateEvidence.candidate_id).where(
@@ -507,11 +507,18 @@ class RadarEngine:
                     .where(Token.chain == "bsc", Token.address.in_(addresses))
                 ).all()
             )
-        for candidate_id in sorted(ids):
-            candidate = self.session.get(RadarCandidate, candidate_id)
+        return list(self.session.scalars(select(RadarCandidate).where(
+            RadarCandidate.id.in_(ids),
+        ).order_by(RadarCandidate.id).execution_options(populate_existing=True)))
+
+    def revalidate_raw(self, raw, *, at=None, candidates=None):
+        at = utc(at or datetime.now(UTC))
+        candidates = self.candidates_for_raw(raw) if candidates is None else candidates
+        for candidate in candidates:
             if raw.removed or raw.confirmation_status == "orphaned":
                 candidate.invalidated_at = at
             self.refresh(candidate, at=at)
+        return candidates
 
     def refresh_for_event(self, row, *, at=None):
         """Update existing candidates even when this event is not a discovery trigger."""
