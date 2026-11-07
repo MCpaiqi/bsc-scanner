@@ -29,7 +29,12 @@ async def main():
     queue = await event_bus.subscribe()
     task = asyncio.create_task(subscribe_redis())
     try:
-        event = await asyncio.wait_for(queue.get(), timeout=20)
+        while True:
+            event = await asyncio.wait_for(queue.get(), timeout=20)
+            if event["event_type"] != "STREAM_RESET":
+                break
+            if event["data"]["reason"] == "BROKER_RECONNECTED":
+                print("READY", flush=True)
         print(json.dumps(event, default=str), flush=True)
     finally:
         task.cancel()
@@ -53,6 +58,7 @@ asyncio.run(main())
             await asyncio.sleep(0.05)
         else:
             pytest.fail("separate API process did not subscribe to isolated Redis")
+        assert (await asyncio.wait_for(process.stdout.readline(), timeout=10)).strip() == b"READY"
         await coverage_session.run_sync(lambda sync: enqueue_event(
             sync, "CANDIDATE_UPDATED", chain="bsc", token="ghost", data={"rolled_back": True}))
         await coverage_session.rollback()

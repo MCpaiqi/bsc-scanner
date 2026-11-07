@@ -23,6 +23,34 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(() => root.unmount()); host.remove(); vi.restoreAllMocks(); });
 
+it("refreshes research after a stream reset without reloading annotations or discarding the note draft", async () => {
+  vi.mocked(api.annotation).mockResolvedValue({ note: "saved" });
+  await act(async () => root.render(<TokenDetail candidate={candidate} refreshKey={0} onClose={() => {}} />));
+  const note = host.querySelector("textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(note, "unsaved draft");
+    note.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  vi.mocked(api.candidate).mockResolvedValue({ ...candidate, name: "Refreshed research" });
+  await act(async () => root.render(<TokenDetail candidate={candidate} refreshKey={1} onClose={() => {}} />));
+  expect(api.candidate).toHaveBeenCalledTimes(2);
+  expect(api.annotation).toHaveBeenCalledOnce();
+  expect(host.querySelector("h2")?.textContent).toContain("Refreshed research");
+  expect(host.querySelector("textarea")?.value).toBe("unsaved draft");
+});
+
+it("does not present an old research panel as refreshed when recovery fails", async () => {
+  await act(async () => root.render(<TokenDetail candidate={candidate} refreshKey={0} onClose={() => {}} />));
+  vi.mocked(api.candidate).mockRejectedValueOnce(new Error("offline"));
+  await act(async () => root.render(<TokenDetail candidate={candidate} refreshKey={1} onClose={() => {}} />));
+  expect(host.querySelector('[role="alert"]')?.textContent).toContain("详情数据未同步");
+  expect(host.querySelector(".detail-content")).toBeNull();
+  const retry = [...host.querySelectorAll("button")].find(button => button.textContent === "重新加载详情")!;
+  await act(async () => retry.click());
+  expect(host.querySelector(".detail-content")).not.toBeNull();
+  expect(api.annotation).toHaveBeenCalledOnce();
+});
+
 it("uses the known token name in the detail heading and accessible label when symbol is missing", async () => {
   await act(async () => root.render(<TokenDetail candidate={candidate} onClose={() => {}} />));
   expect(host.querySelector("h2")?.textContent).toContain(candidate.name);

@@ -31,6 +31,43 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(() => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.useRealTimers(); });
 
+it("never applies a late event's financial or risk payload over the canonical response", async () => {
+  const authoritative = { ...candidate, features: { risk: "HIGH", liquidity: 100 } };
+  vi.mocked(api.candidates).mockResolvedValue({ candidates: [authoritative], count: 1, total: 1 });
+  await act(async () => root.render(<RadarPage />));
+  const [onEvent] = vi.mocked(connectRadarEvents).mock.calls.at(-1)!;
+  await act(async () => onEvent({ event_id: "late", event_type: "CANDIDATE_UPDATED", chain: "bsc", token: candidate.token_address,
+    occurred_at: "2026-01-01T00:00:00Z", data: { features: { risk: "LOW" }, priority_score: 999 } }));
+  expect(host.querySelector("tbody tr")?.textContent).toContain("高风险");
+});
+
+it("rejects a fetch started before reset and reports recovery until the new snapshot arrives", async () => {
+  type Payload = Awaited<ReturnType<typeof api.candidates>>;
+  let oldResolve!: (value: Payload) => void, freshResolve!: (value: Payload) => void;
+  vi.mocked(api.candidates).mockReturnValueOnce(new Promise(resolve => { oldResolve = resolve; }))
+    .mockReturnValueOnce(new Promise(resolve => { freshResolve = resolve; }));
+  await act(async () => root.render(<RadarPage />));
+  const reset = vi.mocked(connectRadarEvents).mock.calls.at(-1)![3]!;
+  await act(async () => reset({ reason: "REPLAY_LIMIT", live_available: true }));
+  await act(async () => oldResolve({ candidates: [{ ...candidate, name: "obsolete" }], count: 1, total: 1 }));
+  expect(host.querySelector("tbody")?.textContent ?? "").not.toContain("obsolete");
+  expect(host.querySelector(".activity-panel")?.textContent).toContain("重新同步");
+  await act(async () => freshResolve({ candidates: [candidate], count: 1, total: 1 }));
+  expect(host.querySelector("tbody tr")?.textContent).toContain(candidate.name);
+  expect(host.querySelector(".activity-panel")?.textContent).toContain("快照已刷新");
+});
+
+it("keeps failed resnapshot explicit and lets the user retry", async () => {
+  await act(async () => root.render(<RadarPage />));
+  vi.mocked(api.candidates).mockRejectedValueOnce(new Error("offline"));
+  const reset = vi.mocked(connectRadarEvents).mock.calls.at(-1)![3]!;
+  await act(async () => reset({ reason: "SLOW_CONSUMER", live_available: true }));
+  expect(host.querySelector(".activity-panel")?.textContent).toContain("数据未同步");
+  const retry = [...host.querySelectorAll("button")].find(button => button.textContent === "重新刷新")!;
+  await act(async () => retry.click());
+  expect(host.querySelector(".activity-panel")?.textContent).toContain("快照已刷新");
+});
+
 it("shows the scanned token's name beside its symbol", async () => {
   await act(async () => root.render(<RadarPage />));
   expect(host.querySelector("tbody tr")?.textContent).toContain(candidate.name);

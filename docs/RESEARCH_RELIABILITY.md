@@ -21,7 +21,7 @@ explicit UNKNOWN states. Preserve existing local data and untracked source.
   drawdown uses price / running peak - 1; historical and live evaluation agree.
 - [x] R6: normal and deferred candidate projections have equivalent audit/baseline/
   rule effects; event fanout happens after commit and survives retry without ghosts.
-- [ ] R7: SSE reconnect/replay has explicit bounded recovery semantics under bursts.
+- [x] R7: SSE reconnect/replay has explicit bounded recovery semantics under bursts.
 - [x] R8: Alpha score range, available evidence, threshold and UI classifications agree.
 - [ ] R9: complete candidate sorting/filtering/pagination, continuously refreshed
   detail/statistics and separate unavailable/error/stale states are demonstrated.
@@ -676,3 +676,54 @@ separate gate; schema creation inside regressions does not prove migration parit
   Alembic0044 is the sole head; offline upgrade SQL generated 1383 lines. R6 is
   complete at its final-state/committed-event scope. R3 final audit, R7 reconnect,
   R9/R10 workflows and R11–R14 remain OPEN; the original programme stays active.
+
+## Bounded SSE recovery and canonical browser resnapshot (2026-11-07)
+
+- R7 implementation replaces QueueFull during >256-event replay and silent
+  slow-client loss with explicit STREAM_RESET controls. Retained cursors replay
+  matching events only when they fit; unknown/expired cursors require resnapshot.
+  History/queue sizes stay bounded. A pending reset coalesces later events into
+  its latest resume cursor until consumed. Controls bypass business filters, and
+  subscription attachment/history lookup share one lock. Lazy registration fixes
+  an abandoned-before-iteration response leaking a subscriber.
+- SSE control IDs use the actual resume cursor, or clear Last-Event-ID when no
+  trusted cursor remains. A new API connection requires an initial snapshot.
+  Broker loss/reconnect invalidates old history and communicates link availability;
+  the Redis bridge retries with a bounded delay and closes clients/pubsubs on every
+  attempt. Invalid/oversized frames reset continuity instead of killing the feed.
+  Neither bounded memory replay nor Redis publication is an exact durable event log.
+- The browser requests its supported business types, consumes controls separately,
+  bounds recent-ID dedup at1024 and treats all domain messages as refresh hints.
+  Historical/retried payloads can no longer overwrite canonical risk, money or
+  priority. Reset/open invalidates in-flight candidate responses by generation,
+  triggers a coalesced REST refresh and displays recovery/failure/link states.
+  Selected-detail recovery refreshes research without reloading annotations or
+  erasing drafts. Failed detail recovery hides unrefreshed research and offers retry.
+- UI/UX skill guidance for error recovery was applied to explicit status text,
+  accessible live feedback and retry actions while preserving the existing layout.
+  Previously untracked application entry points and their existing source
+  dependencies are included so the published recovery client is buildable.
+- One fresh read-only review found two protocol faults: Redis eager UTF-8 decoding
+  could terminate the bridge before validation, and NUL/lone-surrogate IDs could
+  poison both business and reset SSE frames. RED regressions reproduced both.
+  The bridge now validates raw bytes and also recovers decoder-level failures;
+  cursors must be UTF-8 encodable and exclude NUL/CR/LF before retention.
+- Real PostgreSQL/Redis verification: **30 passed**. A separate real HTTP API
+  process receives a committed event, rejects malformed UTF-8 with a reset,
+  discloses CLIENT KILL of its Redis subscription, reconnects, rejects the old
+  replay cursor and receives the next event. The committed-outbox consumer also
+  handles the new control handshake. No live chain/provider calls are involved.
+- Frontend **50 tests passed**, typecheck and production build passed. A separate
+  export of all38 intended frontend source/build inputs ran fresh npm ci, build
+  and the same50 tests; SHA256 comparison confirms it matches the worktree.
+  Initial offline installation lacked one cached package, so normal locked install
+  was used. Node24.14 emits the existing jsdom engine-floor warning; runtime and
+  dependency version policy and CI remain OPEN R12 work, not certified here.
+- Final backend run: **743 passed, 34 skipped, 13 existing warnings**; full Ruff
+  and whitespace passed. The post-review Redis/PG selection is30 checks, with all
+  decoder/cursor fixes included. Verified zero owned schemas, no other test DB
+  connections and no API Redis subscriber before stopping the owned temporary
+  services. Export/dependency files and verification logs remain outside the commit.
+- R7 is complete at its bounded replay/resnapshot contract. R3 final audit,
+  R9/R10 workflow, R11 bounded operation, R12 reproducibility/CI, R13 access and
+  R14 full topology/provider acceptance remain OPEN. The overall goal stays active.

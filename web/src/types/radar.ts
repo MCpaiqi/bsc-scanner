@@ -56,6 +56,8 @@ export interface EarlyBuyer {
 export interface DetailPayload { candidate: Candidate; earlyBuyers: EarlyBuyer[]; smartMoney: Record<string, unknown> | null; risk: Record<string, unknown> | null; }
 export type RadarEventType = "CANDIDATE_DISCOVERED" | "CANDIDATE_UPDATED" | "SMART_MONEY_ENTRY" | "EARLY_BUYER_UPDATE" | "RISK_CHANGED" | "SIGNAL_CHANGED" | "AUDIT_STARTED" | "AUDIT_COMPLETED" | "AUDIT_FAILED" | "ALERT_TRIGGERED" | "SOURCE_DEGRADED";
 export interface RadarEvent { event_id: string; event_type: RadarEventType; chain: string; token_address?: string; token?: string; occurred_at: string; data: Record<string, unknown>; }
+export interface StreamRecovery { reason: string; resume_from?: string | null; live_available?: boolean | null; }
+export type EventSyncState = "refreshing" | "ready" | "failed" | "broker_down" | "broker_unknown";
 export interface AlphaCandidate {
   identity: { chain: string; token: string; pair: string; symbol: string | null; name: string | null; image_url: string | null; quote_symbol: string | null; dex: string | null; dex_url: string | null };
   pair_created_at: string; snapshot_at: string; observation_seconds: number; current_age_seconds: number; alpha_score: number | null;

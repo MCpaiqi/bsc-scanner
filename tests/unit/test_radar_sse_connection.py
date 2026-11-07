@@ -28,3 +28,14 @@ async def test_quiet_sse_connection_opens_immediately_and_cleans_up(monkeypatch)
     finally:
         await stream.aclose()
     assert bus.subscriber_count == 0
+
+
+@pytest.mark.asyncio
+async def test_response_abandoned_before_iteration_does_not_leak_a_subscriber(monkeypatch):
+    bus = RadarEventBus()
+    monkeypatch.setattr(radar, "event_bus", bus)
+    request = Request({"type": "http", "method": "GET", "path": "/api/radar/events",
+                       "headers": [], "query_string": b""})
+    response = await radar.radar_events(request)
+    await response.body_iterator.aclose()
+    assert bus.subscriber_count == 0

@@ -392,8 +392,8 @@ async def radar_events(request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     token = request.query_params.get("token")
-    queue = await event_bus.subscribe(last_id, event_types=event_types, chain=chain, token=token)
     async def stream():
+        queue = await event_bus.subscribe(last_id, event_types=event_types, chain=chain, token=token, require_sync=True)
         try:
             # Flush the connection immediately even when the market is quiet.
             yield ": connected\n\n"
