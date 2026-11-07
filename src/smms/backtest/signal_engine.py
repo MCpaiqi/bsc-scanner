@@ -11,6 +11,8 @@ from statistics import median
 from types import MappingProxyType
 from typing import Any
 
+from smms.evaluation import PATH_EVALUATION_VERSION, PricePoint, evaluate_price_path
+
 HORIZONS = (("30s", timedelta(seconds=30)), ("1m", timedelta(minutes=1)), ("5m", timedelta(minutes=5)), ("15m", timedelta(minutes=15)), ("30m", timedelta(minutes=30)), ("1h", timedelta(hours=1)), ("4h", timedelta(hours=4)), ("24h", timedelta(hours=24)))
 TARGETS = (Decimal("0.10"), Decimal("0.25"), Decimal("0.50"), Decimal(1), Decimal(2), Decimal(5), Decimal(10))
 STOPS = (Decimal("-0.10"), Decimal("-0.25"), Decimal("-0.50"), Decimal("-0.90"))
@@ -127,6 +129,9 @@ class Evaluation:
     max_adverse_excursion: Decimal | None = None
     max_favorable_excursion: Decimal | None = None
     reason: str | None = None
+    endpoint_at: datetime | None = None
+    endpoint_offset_seconds: float | None = None
+    evaluation_version: str = PATH_EVALUATION_VERSION
 
     def as_dict(self) -> dict[str, Any]:
         result = {name: getattr(self, name) for name in self.__dataclass_fields__}
@@ -135,6 +140,7 @@ class Evaluation:
                 result[key] = str(result[key])
         result["hit_targets"] = list(result["hit_targets"])
         result["hit_stops"] = list(result["hit_stops"])
+        result["endpoint_at"] = self.endpoint_at.isoformat() if self.endpoint_at else None
         return result
 
 @dataclass(frozen=True)
@@ -185,7 +191,12 @@ def generate_signal(token: str, timestamp: datetime, *, market: Mapping[str, Any
     future = _future_snapshot(market, ts) or _future_snapshot(smart_money, ts) or _future_snapshot(risk, ts)
     if future: flags.append("future_snapshot")
     early = [item for item in early_buyers if (_get(item, "first_buy_time", _get(item, "timestamp"))) is not None and _dt(_get(item, "first_buy_time", _get(item, "timestamp"))) <= ts]
-    early_score = min(Decimal(100), Decimal(len(early)) * Decimal(10)); risk_level = str(risk.get("overall_risk", risk.get("risk_level", "UNKNOWN"))).upper(); risk_score = {"LOW": Decimal(100), "MEDIUM": Decimal(60), "HIGH": Decimal(20), "CRITICAL": Decimal(0)}.get(risk_level)
+    early_score = min(Decimal(100), Decimal(len(early)) * Decimal(10))
+    # Older materialized dataset-v2 rows use `level`; preserve their risk meaning.
+    risk_level = str(
+        risk.get("overall_risk", risk.get("risk_level", risk.get("level", "UNKNOWN")))
+    ).upper()
+    risk_score = {"LOW": Decimal(100), "MEDIUM": Decimal(60), "HIGH": Decimal(20), "CRITICAL": Decimal(0)}.get(risk_level)
     values = {"market": market_score or Decimal(0), "smart_money": smart_score or Decimal(0), "early_buyer": early_score, "liquidity": min(Decimal(100), liquidity / Decimal(1000)) if liquidity is not None else Decimal(0), "risk": risk_score or Decimal(0)}
     key = strategy.replace("-", "_").lower()
     if key in {"market_only", "early_buyer_only", "early_buyer", "random", "universe", "universe_baseline"}:
@@ -219,17 +230,34 @@ def _tol(name: str, tolerance: timedelta | Mapping[str, timedelta] | None) -> ti
     if isinstance(tolerance, Mapping): return tolerance.get(name, timedelta(0))
     return tolerance if isinstance(tolerance, timedelta) else timedelta(seconds=5)
 
-def evaluate_signal(signal: TokenSignal, prices: Iterable[Any], *, rug_threshold: Decimal = Decimal("-0.90"), coverage_tolerance: timedelta | Mapping[str, timedelta] | None = None) -> tuple[Evaluation, ...]:
-    if signal.entry_price is None: return tuple(Evaluation(name, None, None, None, False, reason="INSUFFICIENT_HORIZON_COVERAGE") for name,_ in HORIZONS)
-    rows = sorted((r for r in prices if (_observation_time(r) or signal.timestamp) > signal.timestamp and _dec(_get(r, "price")) is not None), key=lambda r: _observation_time(r) or signal.timestamp); out = []
+def evaluate_signal(signal: TokenSignal, prices: Iterable[Any], *, rug_threshold: Decimal = Decimal("-0.90"), coverage_tolerance: timedelta | Mapping[str, timedelta] | None = None, at: datetime | None = None) -> tuple[Evaluation, ...]:
+    points = [PricePoint(timestamp, _get(row, "price"), _get(row, "reference", ""),
+                         _get(row, "provenance")) for row in prices
+              if (timestamp := _observation_time(row)) is not None]
+    out = []
     for name, delta in HORIZONS:
-        target = signal.timestamp + delta; candidates = [r for r in rows if abs((_observation_time(r)-target).total_seconds()) <= _tol(name, coverage_tolerance).total_seconds()]; path = [r for r in rows if _observation_time(r) <= target]
-        if not candidates or not path: out.append(Evaluation(name, None, None, None, False, reason="INSUFFICIENT_HORIZON_COVERAGE")); continue
-        returns = [(_dec(_get(r,"price"))/signal.entry_price-1) for r in path]; final = min(candidates, key=lambda r: abs((_observation_time(r)-target).total_seconds())); high, low = max(returns), min(returns); peak=Decimal(1); dd=Decimal(0)
-        for value in returns:
-            equity=Decimal(1)+value; peak=max(peak,equity); dd=min(dd,equity/peak-1)
-        targets=tuple(str(int(t*100))+"%" for t in TARGETS if high>=t); stops=tuple(str(int(abs(s)*100))+"%" for s in STOPS if low<=s); ath=path[returns.index(high)]; di=next((i for i,v in enumerate(returns) if v<=Decimal("-0.10")),None)
-        out.append(Evaluation(name, _dec(_get(final,"price"))/signal.entry_price-1, high, low, True, targets, stops, int((_observation_time(ath)-signal.timestamp).total_seconds()), int((_observation_time(path[di])-signal.timestamp).total_seconds()) if di is not None else None, low<=rug_threshold, dd, low, high))
+        result = evaluate_price_path(
+            signal.entry_price, signal.timestamp, points, horizon=delta,
+            tolerance=_tol(name, coverage_tolerance), at=at,
+        )
+        if result is None:
+            out.append(Evaluation(name, None, None, None, False,
+                                  reason="INSUFFICIENT_HORIZON_COVERAGE"))
+            continue
+        high, low = result.high_return, result.low_return
+        ath = result.path[result.returns.index(high)]
+        first_loss = next((p for p, value in zip(result.path, result.returns, strict=True)
+                           if value <= Decimal("-0.10")), None)
+        out.append(Evaluation(
+            name, result.return_pct, high, low, True,
+            tuple(f"{int(t * 100)}%" for t in TARGETS if high >= t),
+            tuple(f"{int(abs(s) * 100)}%" for s in STOPS if low <= s),
+            int((ath.timestamp - signal.timestamp).total_seconds()),
+            int((first_loss.timestamp - signal.timestamp).total_seconds()) if first_loss else None,
+            low <= rug_threshold, result.max_drawdown, low, high,
+            endpoint_at=result.endpoint.timestamp,
+            endpoint_offset_seconds=result.endpoint_offset_seconds,
+        ))
     return tuple(out)
 
 def _metric(items: list[Evaluation]) -> dict[str,Any]:
@@ -240,6 +268,7 @@ def _metric(items: list[Evaluation]) -> dict[str,Any]:
 
 def summarize(evaluations: Iterable[Evaluation], *, capital: Decimal = Decimal(1000), unique_signal_count: int | None = None, strategy: str | None = None, model_version: str | None = None, data_status: str | None = None) -> dict[str,Any]:
     items=list(evaluations); per={name:_metric([x for x in items if x.horizon==name]) for name,_ in HORIZONS}; vals=[x.return_pct for x in items if x.available and x.return_pct is not None]; gains=sum((v for v in vals if v>0),Decimal()); losses=-sum((v for v in vals if v<0),Decimal()); result={"status":"OK" if vals else "INSUFFICIENT_DATA","sample_size":unique_signal_count if unique_signal_count is not None else len(vals),"unique_signal_count":unique_signal_count if unique_signal_count is not None else len(items),"per_horizon_metrics":per,"capital":str(capital),"win_rate":str(sum(v>0 for v in vals)/len(vals)) if vals else None,"median_return":str(median(vals)) if vals else None,"mean_return":str(sum(vals,Decimal())/len(vals)) if vals else None,"profit_factor":str(gains/losses) if losses else None,"max_drawdown":str(min((x.max_drawdown for x in items if x.max_drawdown is not None),default=Decimal(0))) if vals else None,"max_adverse_excursion":str(min((x.max_adverse_excursion for x in items if x.max_adverse_excursion is not None),default=Decimal(0))) if vals else None,"max_favorable_excursion":str(max((x.max_favorable_excursion for x in items if x.max_favorable_excursion is not None),default=Decimal(0))) if vals else None,"rug_rate":str(sum(x.rug for x in items if x.available)/len(vals)) if vals else None}
+    result["evaluation_version"] = PATH_EVALUATION_VERSION
     if strategy is not None: result["strategy"]=strategy
     if model_version is not None: result["model_version"]=model_version
     if data_status is not None: result["data_status"]=data_status
@@ -251,7 +280,7 @@ def run_backtest(rows: Iterable[Mapping[str,Any]], *, strategy: str = "composite
         signal=generate_signal(row["token"],_dt(row["timestamp"]),market=row.get("market"),smart_money=row.get("smart_money"),early_buyers=row.get("early_buyers",()),risk=row.get("risk"),feature_price_history=FeaturePriceHistory.from_observations(row.get("feature_price_history", row.get("prices", ())), _dt(row["timestamp"])),threshold=threshold,model_version=model_version,config_version=config_version,strategy=strategy,weights=weights,max_entry_price_age_seconds=max_entry_price_age_seconds,interesting_eligible=interesting_eligible); identity=(signal.token.lower(),signal.timestamp,strategy)
         if identity in seen: continue
         seen.add(identity); signals.append(signal)
-        if signal.entry_eligible: evaluations.extend(evaluate_signal(signal,row.get("evaluation_price_path", row.get("future_prices", row.get("prices", ()))),coverage_tolerance=coverage_tolerance))
+        if signal.entry_eligible: evaluations.extend(evaluate_signal(signal,row.get("evaluation_price_path", row.get("future_prices", row.get("prices", ()))),coverage_tolerance=coverage_tolerance,at=_dt(row["evaluation_as_of"]) if row.get("evaluation_as_of") else None))
     status="DEGRADED" if any(s.data_status!="OK" for s in signals) else "OK"; summary=summarize(evaluations,capital=capital,unique_signal_count=len(signals),strategy=strategy,model_version=model_version,data_status=status); return BacktestResult(strategy,model_version,summary["status"],tuple(signals),tuple(evaluations),summary)
 
 def baseline_comparison(rows: Iterable[Mapping[str,Any]], *, threshold: Decimal = Decimal(50), capital: Decimal = Decimal(1000), model_version: str = "signal-v1") -> dict[str,Any]:

@@ -9,6 +9,7 @@ from smms.api.app import _worker_health
 from smms.db.models import (
     Base,
     EvidenceObservationRecord,
+    Pair,
     RadarCandidate,
     Signal,
     Token,
@@ -50,6 +51,17 @@ def _candidate(session: Session, features: dict[str, object]) -> RadarCandidate:
     session.add(candidate)
     session.flush()
     return candidate
+
+
+def _observe_pair(session, candidate):
+    from smms.radar.engine import RadarEngine
+
+    token = session.get(Token, candidate.token_id)
+    row = Pair(chain_id=56, address="canonical-pair", token0_address=token.address,
+               token1_address="quote", quote_token="quote", creation_timestamp=NOW)
+    session.add(row)
+    session.flush()
+    RadarEngine(session).ingest(row, at=NOW)
 
 
 def test_audit_scheduler_uses_the_canonical_radar_feature_schema() -> None:
@@ -201,8 +213,8 @@ async def test_external_evidence_orchestrator_persists_and_resolves_chain_first(
                     chain=chain,
                     subject_type="TOKEN",
                     subject_address=token_address,
-                    field="is_honeypot",
-                    value=True,
+                    field="canonical_pair_created",
+                    value=False,
                     source=self.provider_name,
                     evidence_level="TRUSTED_PROVIDER",
                     observed_at=NOW,
@@ -210,28 +222,22 @@ async def test_external_evidence_orchestrator_persists_and_resolves_chain_first(
                 )
             ]
 
-    chain_observation = EvidenceObservation(
-        chain="bsc",
-        subject_type="TOKEN",
-        subject_address="0xtoken",
-        field="is_honeypot",
-        value=False,
-        source="bsc_rpc",
-        source_type="CHAIN",
-        evidence_level="ON_CHAIN_VERIFIED",
-        observed_at=NOW,
-        fetched_at=NOW,
-    )
     with _session() as session:
+        from smms.external_evidence.chain import canonical_observations
+        from smms.radar.engine import RadarEngine
+
+        candidate = _candidate(session, RadarFeatureSnapshot.unknown(age_seconds=0, market_phase="UNKNOWN").as_dict())
+        _observe_pair(session, candidate)
+        chain_observations = canonical_observations(RadarEngine(session), candidate, as_of=NOW)
         resolved = await ExternalEvidenceOrchestrator(
             session, providers=[MarketProvider(), SecurityProvider()]
-        ).refresh("bsc", "0xtoken", as_of=NOW, chain_observations=[chain_observation])
+        ).refresh("bsc", "0xtoken", as_of=NOW, chain_observations=chain_observations)
 
         assert resolved["price_usd"].resolved_value == "1.25"
-        assert resolved["is_honeypot"].resolved_value is False
-        assert resolved["is_honeypot"].conflict is True
+        assert resolved["canonical_pair_created"].resolved_value is True
+        assert resolved["canonical_pair_created"].conflict is True
         assert {row.source for row in session.query(EvidenceObservationRecord)} == {
-            "bsc_rpc",
+            "smms_chain",
             "dexscreener",
             "goplus",
         }
@@ -246,8 +252,8 @@ async def test_sync_orchestrator_seam_is_safe_inside_running_event_loop() -> Non
         field="is_honeypot",
         value=False,
         source="bsc_rpc",
-        source_type="CHAIN",
-        evidence_level="ON_CHAIN_VERIFIED",
+        source_type="SECONDARY_PROVIDER",
+        evidence_level="TRUSTED_PROVIDER",
         observed_at=NOW,
         fetched_at=NOW,
     )
@@ -275,6 +281,7 @@ def test_resolved_evidence_reaches_risk_and_live_signal_is_durable() -> None:
     ).as_dict()
     with _session() as session:
         candidate = _candidate(session, features)
+        _observe_pair(session, candidate)
         token = session.get(Token, candidate.token_id)
         resolved = {
             "is_honeypot": {
@@ -312,7 +319,10 @@ def test_risk_snapshot_serializes_decimal_dimension_details() -> None:
         session.flush()
 
         RiskAggregationService(session, chain="bsc").refresh(
-            as_of=NOW, token_address=row.address
+            as_of=NOW, token_address=row.address,
+            resolved_evidence={"liquidity_usd": {"resolved_value": Decimal(5000), "source": "fixture",
+                                                "evidence_level": "TRUSTED_PROVIDER", "freshness": "FRESH",
+                                                "confidence": 1}},
         )
         session.commit()
 

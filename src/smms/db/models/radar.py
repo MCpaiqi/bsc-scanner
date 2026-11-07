@@ -4,12 +4,24 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, ClassVar
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Index, Integer, Numeric, String
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from smms.radar.domain import CandidateStatus, check_transition
 
 from .base import Base, utc_now
+from .research import SnapshotLineageMixin
 
 
 def status_type(name="candidate_status"):
@@ -40,6 +52,9 @@ class RadarCandidate(Base):
     stage: Mapped[str] = mapped_column(String(32), default="UNKNOWN")
     priority_score: Mapped[Decimal] = mapped_column(Numeric(6, 2), default=0)
     features_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    projection_id: Mapped[int | None] = mapped_column(ForeignKey(
+        "radar_feature_observations.id", use_alter=True, name="fk_radar_candidate_projection", ondelete="SET NULL",
+    ), index=True)
     priority_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     latest_signal_id: Mapped[int | None] = mapped_column(
         ForeignKey("signals.id", ondelete="SET NULL")
@@ -75,6 +90,28 @@ class RadarCandidate(Base):
             reason=reason,
             timestamp=at,
         )
+
+
+class RadarFeatureObservation(SnapshotLineageMixin, Base):
+    """Immutable canonical input/result boundary for a candidate projection."""
+
+    __tablename__ = "radar_feature_observations"
+    __table_args__ = (
+        UniqueConstraint("candidate_id", "as_of", "config_hash", "research_revision", name="uq_radar_feature_revision"),
+        Index("ix_radar_feature_rebuild", "chain", "source_epoch", "snapshot_status", "id"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    chain: Mapped[str] = mapped_column(String(32), nullable=False)
+    token_address: Mapped[str] = mapped_column(String(128), nullable=False)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("radar_candidates.id", ondelete="CASCADE"), nullable=False)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    features_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    priority_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    context_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    smart_snapshot_id: Mapped[int | None] = mapped_column(ForeignKey("token_smart_money_snapshots.id", ondelete="SET NULL"))
+    risk_snapshot_id: Mapped[int | None] = mapped_column(ForeignKey("token_risk_snapshots.id", ondelete="SET NULL"))
+    data_status: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
 class RadarCandidateHistory(Base):

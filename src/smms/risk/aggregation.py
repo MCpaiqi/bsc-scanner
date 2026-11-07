@@ -8,8 +8,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from smms.chains.constants import normalize_address, validate_bsc_chain
+from smms.db.facts import canonical_fact_conditions
 from smms.db.models import Token, TokenRiskSnapshot, TradeEvent
 from smms.db.repositories import TokenRiskSnapshotRepository
+from smms.external_evidence.chain import filter_resolved
+from smms.research.lineage import manifest, row_values
+from smms.research.state import capture_epoch
 
 from .engine import RISK_VERSION, analyze_token_risk
 
@@ -42,8 +46,10 @@ class RiskAggregationService:
         as_of: datetime | None = None,
         token_address: str | None = None,
         resolved_evidence: Mapping[str, Any] | None = None,
+        historical_rebuild: bool = False,
     ) -> int:
         cutoff = as_of or datetime.now(UTC)
+        source_epoch = capture_epoch(self.session, self.chain)
         query = select(Token).where(Token.chain == self.chain)
         if token_address:
             query = query.where(Token.address == normalize_address(token_address, chain=self.chain))
@@ -51,18 +57,48 @@ class RiskAggregationService:
         repo = TokenRiskSnapshotRepository(self.session)
         count = 0
         for token in tokens:
-            trades = list(self.session.scalars(select(TradeEvent).where(TradeEvent.chain == self.chain, TradeEvent.token_address == token.address, TradeEvent.timestamp <= cutoff).order_by(TradeEvent.timestamp, TradeEvent.id)).all())
+            trades = list(self.session.scalars(
+                select(TradeEvent).where(
+                    TradeEvent.chain == self.chain,
+                    TradeEvent.token_address == token.address,
+                    TradeEvent.timestamp <= cutoff,
+                    *canonical_fact_conditions(TradeEvent),
+                ).order_by(TradeEvent.timestamp, TradeEvent.id)
+            ).all())
+            # Token cache fields have no historical/fork identity. Explicit
+            # resolved evidence and canonical trades are the reproducible inputs.
+            observation = {"address": token.address, "metadata_json": {}}
+            if historical_rebuild:
+                from smms.evidence import EvidenceResolver
+                from smms.external_evidence.orchestrator import ExternalEvidenceOrchestrator
+
+                stored = ExternalEvidenceOrchestrator(self.session, providers=[]).load(self.chain, token.address, as_of=cutoff)
+                evidence = EvidenceResolver().resolve(stored, now=cutoff)
+            else:
+                evidence = filter_resolved(
+                    self.session, resolved_evidence, chain=self.chain, token=token.address, as_of=cutoff, epoch=source_epoch,
+                )
             analysis = analyze_token_risk(
-                token,
+                observation,
                 trades=trades,
                 as_of=cutoff,
-                resolved_evidence=resolved_evidence,
+                resolved_evidence=evidence,
             )
             provenance = {
                 name: item.as_dict() if hasattr(item, "as_dict") else dict(item)
-                for name, item in (resolved_evidence or {}).items()
+                for name, item in (evidence or {}).items()
             }
             row = TokenRiskSnapshot(
+                source_epoch=source_epoch,
+                input_manifest=manifest(kind="token_risk_snapshots", parameters={
+                    "token_address": token.address, "as_of": cutoff, "risk_version": self.risk_version,
+                    "input_policy": "canonical-research-v1",
+                }, facts={"token_observation": observation,
+                           "trades": [row_values(trade) for trade in trades],
+                           "resolved_evidence": _json_safe(provenance),
+                           "evidence_sources": _json_safe({name: list(getattr(item, "observations", ()))
+                                                           for name, item in (evidence or {}).items()})},
+                    notes=["HISTORICAL_TOKEN_CACHE_UNAVAILABLE" if historical_rebuild else "UNVERSIONED_TOKEN_CACHE_UNAVAILABLE"]),
                 chain=self.chain,
                 token_address=analysis.token,
                 contract_risk=analysis.contract_risk.level,

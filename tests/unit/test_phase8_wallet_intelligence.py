@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import pytest
+
 from smms.smart_money import (
     build_wallet_knowledge_graph,
     build_wallet_profile,
@@ -71,3 +73,29 @@ def test_historical_replay_returns_recurring_early_wallets_only_at_cutoff():
     result = replay_historical_smart_money(winners, rows, as_of=T0 + timedelta(days=1))
     assert [row["token"] for row in result["successful_tokens"]] == ["one", "two"]
     assert result["recurring_wallets"] == ["a"]
+
+
+@pytest.mark.parametrize("missing", [None, "NaN", "Infinity", "-1"])
+def test_flow_missing_usd_cannot_be_coerced_to_zero(missing):
+    result = smart_money_flow([trade("a", "meme", "BUY", 1, 10),
+                               trade("a", "meme", "SELL", 2, missing)],
+                              token="meme", smart_wallets=["a"], window="5m",
+                              as_of=T0 + timedelta(minutes=5))
+    assert result["inflow"] == 10
+    assert result["outflow"] is None and result["net_flow"] is None
+    assert result["data_status"] == "DEGRADED"
+
+
+def test_observed_zero_usd_remains_known():
+    result = smart_money_flow([trade("a", "meme", "BUY", 1, 0)], token="meme",
+                              smart_wallets=["a"], as_of=T0 + timedelta(minutes=5))
+    assert result["net_flow"] == 0 and result["data_status"] == "OBSERVED"
+
+
+def test_replay_discloses_graph_source_clipping():
+    result = replay_historical_smart_money(
+        [{"address": "meme", "first_seen_at": T0, "ath_multiple": 2}],
+        [trade("a", "meme", "BUY", 1), trade("b", "meme", "BUY", 2)],
+        as_of=T0 + timedelta(minutes=5), graph_parameters={"max_source_events": 1})
+    assert result["truncated"] is True
+    assert "source_event_limit" in result["truncation_reasons"]

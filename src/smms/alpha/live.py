@@ -19,14 +19,14 @@ from smms.alpha.baseline import (
     rolling_vwap,
     swap_amounts_for_basis,
 )
-from smms.db.models import AlphaSnapshot, Pair, TradeEvent
+from smms.db.facts import canonical_fact_conditions
+from smms.db.models import AlphaCoverageJob, AlphaSnapshot, Pair, TradeEvent
 from smms.observability import metrics
 
-SNAPSHOT_WINDOWS = (30, 60, 180, 300)
-SCORE_VERSION = "experimental-v2"
-CREATION_LOOKBACK = timedelta(minutes=15)  # five-minute windows plus ingestion grace
-TRACKING_HORIZON = timedelta(hours=1)
-OUTCOME_GRACE = timedelta(minutes=15)
+from .lineage import input_manifest
+from .policy import LABEL_VERSION, SCORE_VERSION, TRACKING_HORIZON, policy_id
+from .work import coverage_proof, repair_work
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,6 +62,9 @@ def score_features(features: dict[str, object]) -> dict[str, object]:
     if ratio is not None:
         momentum += min(Decimal(12), max(Decimal(0), ratio * 3))
         positive.append(f"buy/sell ratio = {ratio.quantize(Decimal('0.1'))}") if ratio >= 2 else None
+    elif features.get("buy_count", 0) and features.get("sell_count") == 0:
+        momentum += 12
+        positive.append("observed buys with no sells in covered window")
     if growth is not None:
         momentum += min(Decimal(8), max(Decimal(0), growth * 8))
         if growth > 0:
@@ -73,13 +76,13 @@ def score_features(features: dict[str, object]) -> dict[str, object]:
     participation = min(Decimal(25), Decimal(int(buyers or 0)) * Decimal("0.8"))
     if buyers is not None:
         positive.append(f"unique buyers = {int(buyers)}") if int(buyers) >= 10 else None
-    wallet = Decimal(10)
+    wallet = Decimal(0)
     if top5 is not None:
         wallet = max(Decimal(0), Decimal(20) - top5 * 20)
         if top5 > Decimal("0.4"):
             negative.append(f"top5 buyers = {(top5 * 100).quantize(Decimal(1))}%")
     else:
-        warnings.append("holder concentration unavailable")
+        warnings.append("buyer concentration unavailable")
     liquidity_score = min(Decimal(15), max(Decimal(0), liquidity / 1000)) if liquidity is not None else Decimal(0)
     if liquidity is None:
         warnings.append("liquidity unavailable")
@@ -91,11 +94,15 @@ def score_features(features: dict[str, object]) -> dict[str, object]:
     if rapid_fire is not None and rapid_fire > Decimal("0.5"):
         risk_quality -= 6
         negative.append("rapid-fire trading elevated")
-    score = max(0, min(100, int(momentum + participation + wallet + liquidity_score + risk_quality)))
+    # Observed activity has 70 available points. Missing liquidity does not
+    # silently shrink a documented 0–100 activity scale. Risk stays UNKNOWN.
+    capacity = Decimal(85) if liquidity is not None else Decimal(70)
+    score = max(0, min(100, int((momentum + participation + wallet + liquidity_score + risk_quality) * 100 / capacity)))
     return {
         "alpha_score": score,
         "score_version": SCORE_VERSION,
         "risk_status": "UNKNOWN",
+        "available_points": str(capacity),
         "components": {
             "momentum": momentum,
             "participation": participation,
@@ -122,11 +129,11 @@ def _features(events: list[TradeEvent], cutoff: datetime) -> dict[str, object]:
     second_buyers = {e.trader_address.lower() for e in buys if _utc(e.timestamp) > midpoint and e.trader_address}
     for event in events:
         amount = _decimal(event.quote_amount)
-        if amount is not None:
+        if amount is not None and amount > 0:
             volume += amount
             if _utc(event.timestamp) <= midpoint:
                 first_volume += amount
-        if _side(event.side) == "BUY" and amount is not None and event.trader_address:
+        if _side(event.side) == "BUY" and amount is not None and amount > 0 and event.trader_address:
             by_wallet[event.trader_address.lower()] += amount
     shares = sorted((x / sum(by_wallet.values(), Decimal(0)) for x in by_wallet.values()), reverse=True) if by_wallet else []
     return {
@@ -139,122 +146,140 @@ def _features(events: list[TradeEvent], cutoff: datetime) -> dict[str, object]:
     }
 
 
-def process_live_alpha(session: Session, *, now: datetime, minimum_quote: Decimal = Decimal("0.01")) -> int:
-    """Materialize due snapshots and update their future shadow outcomes."""
+def process_live_alpha(session: Session, *, now: datetime, minimum_quote: Decimal = Decimal("0.01"),
+                       batch_size: int = 128) -> int:
+    """Recover bounded durable work, including tasks older than any live feed."""
+    if not 1 <= batch_size <= 2000:
+        raise ValueError("batch_size must be between 1 and 2000")
+    policy_id(minimum_quote)
     started = perf_counter()
     now = _utc(now)
-    pairs = session.scalars(select(Pair).where(
-        Pair.chain_id == 56, Pair.canonical.is_(True), Pair.removed.is_(False),
-        Pair.creation_timestamp >= now - CREATION_LOOKBACK,
-        Pair.creation_timestamp <= now,
-    )).all()
-    metrics.observe("alpha_pair_query_seconds", perf_counter() - started)
-    created = 0
-    for pair in pairs:
-        if pair.creation_timestamp is None or not pair.quote_token:
+    repair_work(session, batch_size=batch_size)
+    rows = session.scalars(select(AlphaSnapshot).where(
+        AlphaSnapshot.score_version == SCORE_VERSION,
+        AlphaSnapshot.task_status.in_(("PENDING_INPUT", "TRACKING")),
+        AlphaSnapshot.next_evaluation_at <= now, AlphaSnapshot.snapshot_at <= now,
+    ).order_by(AlphaSnapshot.next_evaluation_at, AlphaSnapshot.id).limit(batch_size)
+        .with_for_update(skip_locked=True)).all()
+    addresses = {row.pair_address for row in rows}
+    pairs = {p.address: p for p in session.scalars(select(Pair).where(
+        Pair.chain_id == 56, Pair.address.in_(addresses),
+    ))} if addresses else {}
+    scored = 0
+    for row in rows:
+        row.next_evaluation_at = now + timedelta(seconds=60)
+        outcome = dict(row.outcome_json or {})
+        # Freeze the execution policy on first attempt, before any outcome exists.
+        notional = _decimal(outcome.get("minimum_quote")) or minimum_quote
+        outcome.update(label_version=LABEL_VERSION, minimum_quote=str(notional),
+                       policy_id=policy_id(notional), evaluated_at=now.isoformat(),
+                       tracking_horizon_seconds=int(TRACKING_HORIZON.total_seconds()))
+        pair = pairs.get(row.pair_address)
+        if pair is None or not pair.canonical or pair.removed:
+            row.task_status = "INVALIDATED"
+            outcome.update(tracking_complete=False, input_status="NONCANONICAL_PAIR")
+            row.outcome_json = outcome
             continue
-        t0 = _utc(pair.creation_timestamp)
-        token_address = next((a for a in (pair.token0_address, pair.token1_address) if a and a.lower() != pair.quote_token.lower()), None)
-        if token_address is None:
+        job = session.scalar(select(AlphaCoverageJob).where(AlphaCoverageJob.pair_id == pair.id))
+        if job is None or row.coverage_generation != job.generation:
+            row.task_status, row.next_evaluation_at = "INVALIDATED", None
+            outcome.update(tracking_complete=False, input_status="STALE_GENERATION")
+            row.outcome_json = outcome
             continue
-        for seconds in SNAPSHOT_WINDOWS:
-            snapshot_at = t0 + timedelta(seconds=seconds)
-            if snapshot_at > now:
-                continue
-            existing = session.scalar(select(AlphaSnapshot).where(AlphaSnapshot.chain == "bsc", AlphaSnapshot.token_address == token_address.lower(), AlphaSnapshot.pair_address == pair.address.lower(), AlphaSnapshot.observation_seconds == seconds, AlphaSnapshot.score_version == SCORE_VERSION))
-            if existing is not None:
-                continue
-            events = session.scalars(select(TradeEvent).where(TradeEvent.chain == "bsc", TradeEvent.pair_address == pair.address.lower(), TradeEvent.token_address == token_address.lower(), TradeEvent.timestamp >= t0, TradeEvent.timestamp <= snapshot_at, TradeEvent.canonical.is_(True), TradeEvent.removed.is_(False)).order_by(TradeEvent.timestamp, TradeEvent.id)).all()
-            features = _features(events, snapshot_at)
-            scoring = score_features(features)
-            # Prefer human only when every priced observation has human amounts.
+        entry_proof = coverage_proof(session, pair, start=row.pair_created_at,
+                                     end=row.snapshot_at, as_of=now)
+        outcome["entry_coverage"] = entry_proof
+        if entry_proof["status"] != "VERIFIED":
+            outcome.update(input_status="AWAITING_ENTRY_COVERAGE", tracking_complete=False)
+            row.outcome_json = outcome
+            continue
+        if row.coverage_generation is not None and row.coverage_generation != entry_proof["generation"]:
+            row.task_status = "INVALIDATED"
+            outcome.update(input_status="REBUILD_REQUIRED", tracking_complete=False)
+            row.outcome_json = outcome
+            continue
+        if row.alpha_score is None:
+            events = _trades(session, row, start=row.pair_created_at, end=row.snapshot_at)
             eligible = [e for e in events if (_decimal(e.quote_amount) or 0) > 0]
             basis = PRICE_BASIS_HUMAN if eligible and all(
                 swap_amounts_for_basis(e, price_basis=PRICE_BASIS_HUMAN) is not None
                 for e in eligible
             ) else PRICE_BASIS_RAW
-            entry = rolling_vwap(events, start=t0, end=snapshot_at,
-                                 min_quote_notional=minimum_quote, pair=pair, price_basis=basis)
+            # Entry includes Swap logs in the PairCreated block. Future
+            # evaluation retains its exclusive snapshot boundary.
+            entry = rolling_vwap(events, start=_utc(row.pair_created_at) - timedelta(microseconds=1), end=row.snapshot_at,
+                                 min_quote_notional=notional, pair=pair, price_basis=basis)
             if entry is None:
-                basis = PRICE_BASIS_UNAVAILABLE
-            features["risk_status"] = scoring["risk_status"]
-            row = AlphaSnapshot(chain="bsc", token_address=token_address.lower(), pair_address=pair.address.lower(), pair_created_at=t0, snapshot_at=snapshot_at, age_seconds=seconds, observation_seconds=seconds, alpha_score=scoring["alpha_score"], score_version=SCORE_VERSION, scored_at=now, features_json={k: str(v) if isinstance(v, Decimal) else v for k, v in features.items()}, components_json={k: str(v) for k, v in scoring["components"].items()}, positive_reasons=scoring["positive_reasons"], negative_reasons=scoring["negative_reasons"], warnings=scoring["warnings"], entry_vwap=entry, outcome_json={
-                "price_basis": basis,
-                # Preserve sub-1e-18 raw ratios beyond the legacy Numeric column.
-                "entry_vwap_exact": str(entry) if entry is not None else None,
-                **{f"reached_{n}x": None for n in (2, 3, 5, 10)},
-            })
-            session.add(row)
-            created += 1
+                outcome.update(input_status="ENTRY_PRICE_UNAVAILABLE", price_basis=PRICE_BASIS_UNAVAILABLE)
+                row.outcome_json = outcome
+                continue
+            features = _features(events, _utc(row.snapshot_at))
+            scoring = score_features(features)
+            row.alpha_score, row.scored_at = scoring["alpha_score"], now
+            row.coverage_generation = entry_proof["generation"]
+            row.features_json = {k: str(v) if isinstance(v, Decimal) else v for k, v in features.items()}
+            row.features_json["risk_status"] = scoring["risk_status"]
+            row.components_json = {k: str(v) for k, v in scoring["components"].items()}
+            row.components_json["available_points"] = scoring["available_points"]
+            row.positive_reasons, row.negative_reasons = scoring["positive_reasons"], scoring["negative_reasons"]
+            row.warnings = scoring["warnings"]
+            row.entry_vwap = entry
+            row.input_manifest = input_manifest(
+                session, pair=pair, trades=events, proof=entry_proof,
+                start=row.pair_created_at, end=row.snapshot_at, now=now,
+                minimum_quote=notional, basis=basis, entry=entry,
+            )
+            outcome.update(price_basis=basis, entry_vwap_exact=str(entry), input_status="VERIFIED")
+            row.task_status = "TRACKING"
+            scored += 1
+        _evaluate_outcome(session, row, pair, outcome, now=now, minimum_quote=notional)
     session.flush()
-    examined, updated = _update_outcomes(session, now=now, minimum_quote=minimum_quote)
-    duration = perf_counter() - started
-    metrics.observe("alpha_iteration_seconds", duration)
-    metrics.observe("alpha_pairs_examined", len(pairs))
-    metrics.observe("alpha_snapshots_examined", examined)
-    metrics.increment("alpha_outcomes_updated", updated)
-    logger.info("alpha iteration duration=%.3fs pairs_examined=%s snapshots_examined=%s outcomes_updated=%s created=%s",
-                duration, len(pairs), examined, updated, created)
-    return created
+    metrics.observe("alpha_iteration_seconds", perf_counter() - started)
+    metrics.observe("alpha_snapshots_examined", len(rows))
+    metrics.increment("alpha_snapshots_scored", scored)
+    return scored
 
 
-def _update_outcomes(session: Session, *, now: datetime, minimum_quote: Decimal) -> tuple[int, int]:
-    started = perf_counter()
-    rows = session.scalars(select(AlphaSnapshot).where(
-        AlphaSnapshot.score_version == SCORE_VERSION,
-        AlphaSnapshot.snapshot_at >= now - TRACKING_HORIZON - OUTCOME_GRACE,
-        AlphaSnapshot.snapshot_at <= now,
-    )).all()
-    updated = 0
-    # One pair/event batch, bounded to the active one-hour shadow horizon.
-    active = [r for r in rows if not (r.outcome_json or {}).get("tracking_complete")]
-    addresses = {r.pair_address for r in active}
-    pairs = {p.address: p for p in session.scalars(select(Pair).where(
-        Pair.chain_id == 56, Pair.address.in_(addresses),
-        Pair.canonical.is_(True), Pair.removed.is_(False),
-    )).all()} if addresses else {}
-    by_pair: dict[str, list[TradeEvent]] = defaultdict(list)
-    if active:
-        events = session.scalars(select(TradeEvent).where(
-            TradeEvent.chain == "bsc", TradeEvent.pair_address.in_(addresses),
-            TradeEvent.timestamp > min(_utc(r.snapshot_at) for r in active),
-            TradeEvent.timestamp <= now,
-            TradeEvent.canonical.is_(True), TradeEvent.removed.is_(False),
-        ).order_by(TradeEvent.timestamp, TradeEvent.id)).all()
-        for event in events:
-            by_pair[event.pair_address].append(event)
-    metrics.observe("alpha_outcome_batch_query_seconds", perf_counter() - started)
-    for row in active:
-        outcome = dict(row.outcome_json or {})
-        entry = _decimal(outcome.get("entry_vwap_exact")) or row.entry_vwap
-        basis = outcome.get("price_basis")
-        end = min(now, _utc(row.snapshot_at) + TRACKING_HORIZON)
-        if entry is None or entry <= 0 or basis not in {PRICE_BASIS_HUMAN, PRICE_BASIS_RAW}:
-            continue
-        pair = pairs.get(row.pair_address)
-        if pair is None:
-            continue
-        events = [e for e in by_pair[row.pair_address] if e.token_address == row.token_address
-                  and _utc(row.snapshot_at) < _utc(e.timestamp) <= end]
-        prices = []
-        for event in events:
-            amounts = swap_amounts_for_basis(event, pair=pair, price_basis=basis)
-            price = (amounts[0] / amounts[1] if amounts else None) if basis == PRICE_BASIS_RAW else _decimal(event.price_quote)
-            if price is not None and price > 0:
-                prices.append(price)
-        row.current_return = prices[-1] / entry - 1 if prices else None
-        row.max_tick_return = max(prices) / entry - 1 if prices else None
-        realisable, _ = max_rolling_vwap(events, start=row.snapshot_at, end=end,
-                                       min_quote_notional=minimum_quote, pair=pair, price_basis=basis)
-        row.max_realisable_return = realisable / entry - 1 if realisable is not None else None
-        row.outcome_json = {
-            **outcome,
-            **{f"reached_{n}x": (row.max_realisable_return >= n - 1
-                                if row.max_realisable_return is not None else None)
-               for n in (2, 3, 5, 10)},
-            "tracking_horizon_seconds": int(TRACKING_HORIZON.total_seconds()),
-            "evaluated_at": now.isoformat(),
-            "tracking_complete": now >= _utc(row.snapshot_at) + TRACKING_HORIZON + OUTCOME_GRACE,
-        }
-        updated += 1
-    return len(rows), updated
+def _trades(session, row, *, start, end):
+    return session.scalars(select(TradeEvent).where(
+        TradeEvent.chain == "bsc", TradeEvent.pair_address == row.pair_address,
+        TradeEvent.token_address == row.token_address, TradeEvent.timestamp >= start,
+        TradeEvent.timestamp <= end, *canonical_fact_conditions(TradeEvent),
+    ).order_by(TradeEvent.timestamp, TradeEvent.id)).all()
+
+
+def _evaluate_outcome(session, row, pair, outcome, *, now, minimum_quote):
+    entry = _decimal(outcome.get("entry_vwap_exact"))
+    basis = outcome.get("price_basis")
+    if entry is None or entry <= 0 or basis not in {PRICE_BASIS_HUMAN, PRICE_BASIS_RAW}:
+        row.outcome_json = outcome
+        return
+    target = _utc(row.snapshot_at) + TRACKING_HORIZON
+    end = min(now, target)
+    proof = coverage_proof(session, pair, start=row.snapshot_at, end=target, as_of=now)
+    complete = now >= target and proof["status"] == "VERIFIED"
+    events = [e for e in _trades(session, row, start=row.snapshot_at, end=end)
+              if _utc(e.timestamp) > _utc(row.snapshot_at)]
+    prices = []
+    for event in events:
+        amounts = swap_amounts_for_basis(event, pair=pair, price_basis=basis)
+        price = (amounts[0] / amounts[1] if amounts else None) if basis == PRICE_BASIS_RAW else _decimal(event.price_quote)
+        if price is not None and price > 0:
+            prices.append(price)
+    row.current_return = prices[-1] / entry - 1 if prices else None
+    row.max_tick_return = max(prices) / entry - 1 if prices else None
+    realisable, _ = max_rolling_vwap(events, start=row.snapshot_at, end=end,
+                                   min_quote_notional=minimum_quote, pair=pair, price_basis=basis)
+    row.max_realisable_return = realisable / entry - 1 if realisable is not None else None
+    outcome.update(future_coverage=proof, tracking_complete=complete,
+                   evaluation_manifest=input_manifest(
+                       session, pair=pair, trades=events, proof=proof, start=row.snapshot_at,
+                       end=end, now=now, minimum_quote=minimum_quote, basis=basis,
+                       entry=entry, entry_digest=row.input_manifest["digest"],
+                   ),
+                   **{f"reached_{n}x": True if row.max_realisable_return is not None
+                      and row.max_realisable_return >= n - 1 else (False if complete else None)
+                      for n in (2, 3, 5, 10)})
+    row.outcome_json = outcome
+    if complete:
+        row.task_status, row.next_evaluation_at = "COMPLETE", None

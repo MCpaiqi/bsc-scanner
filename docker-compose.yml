@@ -91,6 +91,38 @@ services:
     command: ["python", "-m", "smms.runtime", "forward-worker"]
     restart: unless-stopped
 
+  alpha-coverage:
+    build:
+      context: .
+      target: runtime
+    env_file:
+      - path: .env
+        required: false
+    environment: *runtime-env
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    command: ["python", "-m", "smms.runtime", "alpha-coverage"]
+    restart: unless-stopped
+
+  research-rebuild:
+    build:
+      context: .
+      target: runtime
+    env_file:
+      - path: .env
+        required: false
+    environment: *runtime-env
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    command: ["python", "-m", "smms.runtime", "research-rebuild"]
+    restart: unless-stopped
+
   web:
     build:
       context: .

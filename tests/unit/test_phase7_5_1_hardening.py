@@ -191,6 +191,10 @@ def test_aggregation_is_idempotent_and_excludes_all_future_inputs() -> None:
 
     with Session(engine) as session:
         session.add(Token(address="token", chain="bsc", creation_timestamp=past))
+        from smms.db.models import Pair
+
+        session.add(Pair(chain_id=56, address="verified-pair", token0_address="token", token1_address="quote",
+                         creation_timestamp=past))
         session.add_all(
             [
                 TradeEvent(
@@ -204,6 +208,7 @@ def test_aggregation_is_idempotent_and_excludes_all_future_inputs() -> None:
                     side=TradeSide.BUY,
                     token_amount=Decimal(1),
                     native_amount=Decimal(10),
+                    value_usd=Decimal(10),
                     price=Decimal(10),
                     source="test",
                     metadata_json={"usd_value": "10"},
@@ -219,6 +224,7 @@ def test_aggregation_is_idempotent_and_excludes_all_future_inputs() -> None:
                     side=TradeSide.BUY,
                     token_amount=Decimal(1),
                     native_amount=Decimal(1000),
+                    value_usd=Decimal(1000),
                     price=Decimal(1000),
                     source="test",
                     metadata_json={"usd_value": "1000"},

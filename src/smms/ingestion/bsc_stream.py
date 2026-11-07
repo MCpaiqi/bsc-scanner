@@ -125,6 +125,7 @@ class BSCRealtimeIngestionService:
         self._closed = False
         self.ready = asyncio.Event()
         self._db_lock = asyncio.Lock()
+        self._reorg_stop = asyncio.Event()
         self._reorg_reconcile_task: asyncio.Task[None] | None = None
         self._live_edge_stable_chunks = 0
         self._last_process_outcome: dict[str, Any] = {}
@@ -244,13 +245,26 @@ class BSCRealtimeIngestionService:
 
     async def close(self) -> None:
         self._closed = True
-        if self._reorg_reconcile_task is not None:
-            if not self._reorg_reconcile_task.done():
-                self._reorg_reconcile_task.cancel()
-            await asyncio.gather(self._reorg_reconcile_task, return_exceptions=True)
+        await self._stop_reorg_reconciler()
         close = getattr(self.stream, "close", None)
         if close is not None:
             await close()
+
+    async def _stop_reorg_reconciler(self) -> None:
+        """Drain an entered DB transaction before cancelling the background task.
+
+        Cancelling driver I/O can invalidate the shared connection. Once we own
+        the lock, the task is outside database work and can safely be cancelled.
+        Head RPC probes run outside the lock and remain immediately cancellable.
+        """
+        self._reorg_stop.set()
+        task = self._reorg_reconcile_task
+        if task is not None:
+            async with self._db_lock:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self._reorg_reconcile_task = None
 
     async def _mark_stream_stopped(self) -> None:
         """Persist a terminal cursor without masking a preceding DB failure.
@@ -492,6 +506,7 @@ class BSCRealtimeIngestionService:
         from smms.market.pipeline import BSCMarketPipeline
 
         start = max(0, int(latest) - int(lookback))
+        observed_at = datetime.now(UTC)
         canonical: dict[int, str] = {}
         for number in range(start, int(latest) + 1):
             getter = getattr(self.chain_provider, "get_block", None)
@@ -502,6 +517,10 @@ class BSCRealtimeIngestionService:
                 canonical[number] = str(block.block_hash).lower()
         if not canonical:
             return 0
+        from smms.alpha.work import anchor_blocks
+        canonical, changed_anchors = await self.session.run_sync(lambda sync: anchor_blocks(
+            sync, canonical, observed_at=observed_at, authoritative=True,
+        ))
         rows = (await self.session.scalars(select(RawChainEvent).where(
             RawChainEvent.chain_id == self.chain_id,
             RawChainEvent.block_number >= start,
@@ -509,6 +528,7 @@ class BSCRealtimeIngestionService:
             RawChainEvent.removed.is_(False),
         ))).all()
         invalidated = 0
+        orphan_blocks: list[int] = list(changed_anchors)
         pipeline = BSCMarketPipeline(
             self.session,
             active_pair_registry=self.active_pair_registry,
@@ -518,10 +538,11 @@ class BSCRealtimeIngestionService:
             if expected and raw.block_hash and str(raw.block_hash).lower() != expected:
                 raw.removed = True
                 raw.confirmation_status = "orphaned"
-                await pipeline._invalidate_event(raw)
+                await pipeline._invalidate_event(raw, invalidate_research=False)
                 from smms.radar.hooks import revalidate
                 await revalidate(self.session, raw)
                 invalidated += 1
+                orphan_blocks.append(int(raw.block_number))
         # PairCreated facts may predate raw-event persistence (for example
         # after a worker restart). Compare their stored creation hash directly
         # so an orphan cannot be restored into the live registry first.
@@ -539,6 +560,25 @@ class BSCRealtimeIngestionService:
                 pair.removed = True
                 self.active_pair_registry.remove(pair.address, state="ORPHANED")
                 invalidated += 1
+                orphan_blocks.append(int(pair.creation_block))
+        # Empty successful scans also carry fork evidence, even when no raw
+        # event exists to trigger the normal invalidation path.
+        from smms.alpha.work import invalidate_coverage
+        from smms.db.models import AlphaCoverageReceipt
+        receipts = (await self.session.scalars(select(AlphaCoverageReceipt).where(
+            AlphaCoverageReceipt.canonical.is_(True),
+            (AlphaCoverageReceipt.start_block.between(start, int(latest)))
+            | (AlphaCoverageReceipt.end_block.between(start, int(latest))),
+        ))).all()
+        for receipt in receipts:
+            for number, stored in ((receipt.start_block, receipt.start_hash),
+                                   (receipt.end_block, receipt.end_hash)):
+                if number in canonical and stored.lower() != canonical[number]:
+                    orphan_blocks.append(number)
+        if orphan_blocks:
+            await self.session.run_sync(lambda sync: invalidate_coverage(
+                sync, from_block=min(orphan_blocks), now=datetime.now(UTC),
+            ))
         await self.session.flush()
         # Reconciliation is the sole canonical DB owner for this transaction;
         # persist orphan marks before the next polling/replay cycle observes
@@ -553,15 +593,17 @@ class BSCRealtimeIngestionService:
             float(getattr(settings, "bsc_poll_interval_seconds", 2.0)),
             0.25,
         )
-        while not self._closed:
+        while not self._closed and not self._reorg_stop.is_set():
             try:
                 if self.chain_provider is not None and self.session is not None:
+                    latest = await self.chain_provider.get_latest_block_number()
                     # The live subscription also owns this AsyncSession.  A
                     # reorg probe must never provision or execute on it at
                     # the same time as Raw -> Trade projection.
                     async with self._db_lock:
-                        latest = await self.chain_provider.get_latest_block_number()
-                        await self.reconcile_reorg_window(latest, lookback)
+                        if self._closed or self._reorg_stop.is_set():
+                            break
+                        await self._reconcile_reorg_window_unlocked(latest, lookback)
                         checkpoint = await self.restore_checkpoint()
                         if checkpoint is not None and checkpoint.last_processed_block is not None:
                             await self.record_chunk_progress(
@@ -588,6 +630,13 @@ class BSCRealtimeIngestionService:
     async def _process_log_unlocked(self, log: ChainLog) -> RawChainEvent | None:
         if self.session is None:
             raise RuntimeError("BSC realtime ingestion requires a database session")
+        if log.removed or log.confirmation_status == "orphaned":
+            # Acquire the publication fence before raw-row writes/savepoints,
+            # matching the collector and reconciler's database lock order.
+            from smms.alpha.work import anchor_blocks
+            await self.session.run_sync(lambda sync: anchor_blocks(
+                sync, {}, observed_at=datetime.now(UTC), authoritative=False,
+            ))
         self._last_process_outcome = {"market_event_type": None, "trade_event": False}
         started = time.perf_counter()
         timestamp = log.timestamp
@@ -1123,6 +1172,7 @@ class BSCRealtimeIngestionService:
             and self.session is not None
             and not self.start_from_head
         ):
+            self._reorg_stop.clear()
             self._reorg_reconcile_task = asyncio.create_task(
                 self._run_reorg_reconciler(settings)
             )
@@ -1133,35 +1183,37 @@ class BSCRealtimeIngestionService:
             async for log in self.stream.subscribe_logs(address=address, topics=topics):
                 if self._closed:
                     break
-                await self.process_log(log)
-                await self.confirm_through(log.block_number)
-                if self.session is not None:
-                    await self.session.commit()
-                # Live subscriptions advance the durable checkpoint on each
-                # event, but there is no catch-up chunk callback to project
-                # edge readiness. Reuse the same authoritative progress
-                # projection so a fresh live-tail epoch can become LIVE as
-                # soon as two confirmed edge observations arrive.
-                if self.session is not None:
-                    live_checkpoint = await self.restore_checkpoint()
-                    live_head = self.metrics.current_block
-                    if live_head is None and self.chain_provider is not None:
-                        live_head = await self.chain_provider.get_latest_block_number()
-                    if (
-                        live_checkpoint is not None
-                        and live_checkpoint.last_processed_block is not None
-                        and live_head is not None
-                    ):
-                        await self.record_chunk_progress(
-                            head_block=int(live_head),
-                            checkpoint_block=int(live_checkpoint.last_processed_block),
-                            chunk_started_at=datetime.now(UTC),
-                            chunk_duration_seconds=0,
-                            transport=getattr(self.stream, "active_transport", "http"),
-                            endpoint_index=getattr(self.chain_provider, "active_endpoint_index", None),
-                            counters={"live_event_progress": True},
-                        )
+                checkpoint = None
+                # One owner from raw projection through checkpoint/progress commit.
+                # Releasing the lock between helpers lets reconciliation commit
+                # or query the same AsyncSession in another task's transaction.
+                async with self._db_lock:
+                    await self._process_log_unlocked(log)
+                    await self._confirm_through_unlocked(log.block_number)
+                    if self.session is not None:
                         await self.session.commit()
+                        # Live subscriptions have no catch-up chunk callback;
+                        # project edge readiness from the committed checkpoint.
+                        live_checkpoint = await self.restore_checkpoint()
+                        live_head = self.metrics.current_block
+                        if live_head is None and self.chain_provider is not None:
+                            live_head = await self.chain_provider.get_latest_block_number()
+                        if (
+                            live_checkpoint is not None
+                            and live_checkpoint.last_processed_block is not None
+                            and live_head is not None
+                        ):
+                            await self.record_chunk_progress(
+                                head_block=int(live_head),
+                                checkpoint_block=int(live_checkpoint.last_processed_block),
+                                chunk_started_at=datetime.now(UTC),
+                                chunk_duration_seconds=0,
+                                transport=getattr(self.stream, "active_transport", "http"),
+                                endpoint_index=getattr(self.chain_provider, "active_endpoint_index", None),
+                                counters={"live_event_progress": True},
+                            )
+                            await self.session.commit()
+                        checkpoint = await self.restore_checkpoint()
                 observe_pair = getattr(self.stream, "observe_pair_checkpoint", None)
                 if callable(observe_pair):
                     observe_pair(
@@ -1171,23 +1223,22 @@ class BSCRealtimeIngestionService:
                         log.transaction_hash,
                     )
                 observe = getattr(self.stream, "observe_checkpoint", None)
-                if callable(observe):
-                    checkpoint = await self.restore_checkpoint()
-                    if checkpoint is not None:
-                        observe(
-                            checkpoint.last_processed_block,
-                            checkpoint.last_processed_log,
-                            checkpoint.last_processed_transaction_hash,
-                        )
+                if callable(observe) and checkpoint is not None:
+                    observe(
+                        checkpoint.last_processed_block,
+                        checkpoint.last_processed_log,
+                        checkpoint.last_processed_transaction_hash,
+                    )
         finally:
-            if self._reorg_reconcile_task is not None:
-                if not self._reorg_reconcile_task.done():
-                    self._reorg_reconcile_task.cancel()
-                await asyncio.gather(self._reorg_reconcile_task, return_exceptions=True)
-            self._reorg_reconcile_task = None
-            await self._mark_stream_stopped()
+            await self._stop_reorg_reconciler()
+            async with self._db_lock:
+                await self._mark_stream_stopped()
 
     async def status(self) -> dict[str, Any]:
+        async with self._db_lock:
+            return await self._status_unlocked()
+
+    async def _status_unlocked(self) -> dict[str, Any]:
         checkpoint = await self.restore_checkpoint()
         if self.metrics.current_block is not None:
             metrics.record_chain_head(self.metrics.current_block)

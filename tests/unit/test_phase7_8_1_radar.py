@@ -504,8 +504,9 @@ def test_radar_migration_can_store_projection(tmp_path, monkeypatch):
         assert "raw_required" in {
             c["name"] for c in inspect(db).get_columns("radar_candidate_evidence")
         }
-        command.downgrade(config, "20260912_0014")
-        assert "radar_candidates" not in inspect(db).get_table_names()
+        with pytest.raises(RuntimeError, match="refusing lossy downgrade"):
+            command.downgrade(config, "20260912_0014")
+        assert "radar_candidates" in inspect(db).get_table_names()
         db.dispose()
     finally:
         get_settings.cache_clear()

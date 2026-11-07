@@ -24,6 +24,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 from smms.chains.constants import normalize_address
 
 from .base import Base, TimestampMixin, utc_now
+from .research import SnapshotLineageMixin
 
 Decimal18 = Numeric(38, 18)
 RawAmount = Numeric(50, 0)
@@ -227,16 +228,20 @@ class TradeEvent(Base):
         return normalize_address(value, chain=getattr(self, "chain", None) or ("bsc" if str(value).lower().startswith("0x") else None))
 
 
-class EarlyBuyer(Base):
+class EarlyBuyer(SnapshotLineageMixin, Base):
     """The first qualifying buy for a wallet/token, recomputed from trades."""
 
     __tablename__ = "early_buyers"
     __table_args__ = (
-        UniqueConstraint("chain", "wallet_address", "token_address", name="uq_early_buyers_wallet_token"),
+        UniqueConstraint("chain", "wallet_address", "token_address", "as_of", "recipe_hash", "research_revision",
+                         name="uq_early_buyers_wallet_token"),
         Index("ix_early_buyers_token_rank", "token_address", "buy_rank"),
+        Index("ix_early_buyers_rebuild", "chain", "source_epoch", "snapshot_status", "id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    recipe_hash: Mapped[str] = mapped_column(String(64), default="legacy", server_default="legacy", nullable=False)
     chain: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     wallet_address: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     token_address: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
@@ -257,22 +262,26 @@ class EarlyBuyer(Base):
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
 
-class WalletTokenPosition(Base):
+class WalletTokenPosition(SnapshotLineageMixin, Base):
     """Current wallet/token accounting snapshot derived from the full trade stream."""
 
     __tablename__ = "wallet_token_positions"
     __table_args__ = (
-        UniqueConstraint("chain", "wallet_address", "token_address", name="uq_wallet_token_positions_pair"),
+        UniqueConstraint("chain", "wallet_address", "token_address", "as_of", "recipe_hash", "research_revision",
+                         name="uq_wallet_token_positions_pair"),
         Index("ix_wallet_token_positions_token", "token_address"),
+        Index("ix_wallet_token_positions_rebuild", "chain", "source_epoch", "snapshot_status", "id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    recipe_hash: Mapped[str] = mapped_column(String(64), default="legacy", server_default="legacy", nullable=False)
     chain: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     wallet_address: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     token_address: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    cumulative_bought: Mapped[Decimal] = mapped_column(Decimal18, default=0, nullable=False)
-    cumulative_sold: Mapped[Decimal] = mapped_column(Decimal18, default=0, nullable=False)
-    current_balance: Mapped[Decimal] = mapped_column(Decimal18, default=0, nullable=False)
+    cumulative_bought: Mapped[Decimal | None] = mapped_column(Decimal18)
+    cumulative_sold: Mapped[Decimal | None] = mapped_column(Decimal18)
+    current_balance: Mapped[Decimal | None] = mapped_column(Decimal18)
     total_invested: Mapped[Decimal | None] = mapped_column(Decimal18)
     total_returned: Mapped[Decimal | None] = mapped_column(Decimal18)
     realized_pnl: Mapped[Decimal | None] = mapped_column(Decimal18)
@@ -392,13 +401,13 @@ class SmartMoneyScore(Base):
     version: Mapped[str] = mapped_column(String(32), default="v1", nullable=False)
 
 
-class WalletSmartMoneySnapshot(Base):
+class WalletSmartMoneySnapshot(SnapshotLineageMixin, Base):
     """Versioned wallet profile and score materialized at a strict cutoff."""
 
     __tablename__ = "wallet_smart_money_snapshots"
     __table_args__ = (
         UniqueConstraint(
-            "chain", "wallet_address", "as_of", "score_version", "profile_version",
+            "chain", "wallet_address", "as_of", "score_version", "profile_version", "research_revision",
             name="uq_wallet_smart_money_snapshot_version",
         ),
         Index(
@@ -437,13 +446,13 @@ class WalletSmartMoneySnapshot(Base):
         return normalize_address(value, chain=chain or ("bsc" if str(value).lower().startswith("0x") else None))
 
 
-class TokenSmartMoneySnapshot(Base):
+class TokenSmartMoneySnapshot(SnapshotLineageMixin, Base):
     """Versioned token smart-money rollup materialized at a strict cutoff."""
 
     __tablename__ = "token_smart_money_snapshots"
     __table_args__ = (
         UniqueConstraint(
-            "chain", "token_address", "as_of", "score_version",
+            "chain", "token_address", "as_of", "score_version", "research_revision",
             name="uq_token_smart_money_snapshot_version",
         ),
         Index(
@@ -459,11 +468,11 @@ class TokenSmartMoneySnapshot(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     chain: Mapped[str] = mapped_column(String(32), nullable=False)
     token_address: Mapped[str] = mapped_column(String(128), nullable=False)
-    smart_wallet_count: Mapped[int] = mapped_column(default=0, nullable=False)
-    smart_money_buy_usd: Mapped[Decimal] = mapped_column(Decimal18, default=0, nullable=False)
-    smart_money_sell_usd: Mapped[Decimal] = mapped_column(Decimal18, default=0, nullable=False)
-    smart_money_net_flow: Mapped[Decimal] = mapped_column(Decimal18, default=0, nullable=False)
-    early_smart_buy_count: Mapped[int] = mapped_column(default=0, nullable=False)
+    smart_wallet_count: Mapped[int | None] = mapped_column(nullable=True)
+    smart_money_buy_usd: Mapped[Decimal | None] = mapped_column(Decimal18.evaluates_none(), nullable=True)
+    smart_money_sell_usd: Mapped[Decimal | None] = mapped_column(Decimal18.evaluates_none(), nullable=True)
+    smart_money_net_flow: Mapped[Decimal | None] = mapped_column(Decimal18.evaluates_none(), nullable=True)
+    early_smart_buy_count: Mapped[int | None] = mapped_column(nullable=True)
     smart_money_score: Mapped[Decimal | None] = mapped_column(Score)
     confidence: Mapped[str] = mapped_column(String(16), nullable=False)
     confidence_score: Mapped[Decimal] = mapped_column(Score, nullable=False)
@@ -481,12 +490,12 @@ class TokenSmartMoneySnapshot(Base):
         return normalize_address(value, chain=chain or ("bsc" if str(value).lower().startswith("0x") else None))
 
 
-class TokenRiskSnapshot(Base):
+class TokenRiskSnapshot(SnapshotLineageMixin, Base):
     """Versioned, evidence-preserving risk snapshot independent of Smart Money."""
 
     __tablename__ = "token_risk_snapshots"
     __table_args__ = (
-        UniqueConstraint("chain", "token_address", "as_of", "risk_version", name="uq_token_risk_snapshot_version"),
+        UniqueConstraint("chain", "token_address", "as_of", "risk_version", "research_revision", name="uq_token_risk_snapshot_version"),
         Index("ix_token_risk_snapshot_lookup", "chain", "token_address", "risk_version", "as_of"),
         Index("ix_token_risk_snapshot_rank", "chain", "risk_version", "as_of", "overall_risk"),
     )
@@ -616,14 +625,16 @@ class TokenScore(Base):
     token: Mapped[Token] = relationship(back_populates="scores")
 
 
-class Signal(Base):
+class Signal(SnapshotLineageMixin, Base):
     __tablename__ = "signals"
     __table_args__ = (
-        UniqueConstraint("token_id", "created_at", "model_version", name="uq_signals_token_time_version"),
+        UniqueConstraint("token_id", "created_at", "model_version", "research_revision", name="uq_signals_token_time_version"),
         Index("ix_signals_created_model", "created_at", "model_version"),
+        Index("ix_signals_rebuild", "chain", "source_epoch", "snapshot_status", "id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    chain: Mapped[str] = mapped_column(String(32), nullable=False, default="bsc", server_default="bsc")
     token_id: Mapped[int] = mapped_column(ForeignKey("tokens.id", ondelete="CASCADE"), nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False, index=True
@@ -657,13 +668,14 @@ class Signal(Base):
     token: Mapped[Token] = relationship(back_populates="signals")
 
 
-class BacktestDataset(Base):
+class BacktestDataset(SnapshotLineageMixin, Base):
     """Immutable build metadata for a reproducible historical dataset."""
 
     __tablename__ = "backtest_datasets"
     __table_args__ = (
-        UniqueConstraint("dataset_version", name="uq_backtest_datasets_version"),
+        UniqueConstraint("chain", "dataset_version", "research_revision", name="uq_backtest_datasets_version"),
         Index("ix_backtest_datasets_period", "chain", "period_from", "period_to"),
+        Index("ix_backtest_datasets_rebuild", "chain", "source_epoch", "snapshot_status", "id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

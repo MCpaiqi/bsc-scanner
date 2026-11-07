@@ -572,41 +572,64 @@ def cli(argv: Sequence[str] | None = None) -> None:
         return
     if args.command == "backtest":
         from smms.backtest.signal_engine import run_backtest
-        rows = []
+        rows, dataset_context, result = [], None, None
+
+        def filter_period(items):
+            def in_range(row):
+                stamp = datetime.fromisoformat(str(row["timestamp"]))
+                return (args.from_time is None or stamp >= args.from_time) and (args.to_time is None or stamp <= args.to_time)
+            return [row for row in items if in_range(row)] if args.from_time or args.to_time else items
         if args.dataset:
             from sqlalchemy import select
 
-            from smms.db.models import BacktestDataset, BacktestDatasetRow
-            async def load_dataset() -> list[dict[str, object]]:
-                settings = get_settings()
-                async with session_scope(settings) as session:
-                    query = select(BacktestDataset)
+            from smms.backtest.dataset import load_materialized_dataset
+            from smms.db.models import BacktestDataset
+
+            async def load_dataset():
+                async with session_scope(get_settings()) as session:
+                    query = select(BacktestDataset).where(BacktestDataset.chain == "bsc")
                     query = query.where(BacktestDataset.id == int(args.dataset)) if str(args.dataset).isdigit() else query.where(BacktestDataset.dataset_version == args.dataset)
-                    dataset_row = await session.scalar(query)
+                    dataset_row = await session.scalar(query.execution_options(populate_existing=True))
                     if dataset_row is None:
-                        raise DataUnavailable(f"dataset not found: {args.dataset}")
-                    records = (await session.scalars(select(BacktestDatasetRow).where(BacktestDatasetRow.dataset_id == dataset_row.id).order_by(BacktestDatasetRow.signal_timestamp))).all()
-                    return [record.payload_json for record in records]
-            rows = asyncio.run(load_dataset())
+                        raise DataUnavailable(f"dataset unavailable or rebuilding: {args.dataset}")
+                    try:
+                        records = await session.run_sync(lambda sync: load_materialized_dataset(sync, dataset_row.id))
+                    except LookupError as exc:
+                        raise DataUnavailable("dataset invalidated during load") from exc
+                    context = {"id": dataset_row.id, "dataset_version": dataset_row.dataset_version,
+                               "research_revision": dataset_row.research_revision, "source_epoch": dataset_row.source_epoch,
+                               "input_digest": dataset_row.input_manifest.get("digest"),
+                               "lineage_url": f"/api/research/snapshots/backtest_datasets/{dataset_row.id}"}
+                    evaluated = run_backtest(filter_period(records), strategy=args.strategy, threshold=args.threshold, capital=args.capital)
+                    if await session.scalar(select(BacktestDataset.id).where(BacktestDataset.id == dataset_row.id)) is None:
+                        raise DataUnavailable("dataset invalidated during evaluation; retry after rebuilding")
+                    return evaluated, context
+
+            result, dataset_context = asyncio.run(load_dataset())
         if not args.dataset and args.input and args.input.exists():
             payload = json.loads(args.input.read_text(encoding="utf-8"))
-            rows = payload.get("rows", payload) if isinstance(payload, (dict, list)) else []
-        if args.from_time or args.to_time:
-            def in_range(row: dict) -> bool:
-                stamp = datetime.fromisoformat(str(row["timestamp"]))
-                return (args.from_time is None or stamp >= args.from_time) and (args.to_time is None or stamp <= args.to_time)
-            rows = [row for row in rows if in_range(row)]
-        result = run_backtest(rows, strategy=args.strategy, threshold=args.threshold, capital=args.capital)
+            rows = payload.get("rows", []) if isinstance(payload, dict) else payload if isinstance(payload, list) else []
+        rows = filter_period(rows)
+        if result is None:
+            result = run_backtest(rows, strategy=args.strategy, threshold=args.threshold, capital=args.capital)
         payload = result.as_dict()
+        if dataset_context:
+            payload["dataset"] = dataset_context
+        else:
+            from smms.research.lineage import digest
+
+            payload["source"] = {"type": "EXTERNAL_FILE", "chain_validation": "UNVERIFIED", "content_digest": digest(rows)}
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
         if args.output:
             args.output.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         if args.csv:
             import csv
             with args.csv.open("w", newline="", encoding="utf-8") as handle:
-                writer = csv.DictWriter(handle, fieldnames=("horizon", "return_pct", "high_return", "low_return", "available", "rug"))
+                provenance = ({f"dataset_{key}": value for key, value in dataset_context.items()}
+                              if dataset_context else payload["source"])
+                writer = csv.DictWriter(handle, fieldnames=("horizon", "return_pct", "high_return", "low_return", "available", "rug", *provenance))
                 writer.writeheader()
-                writer.writerows({key: item.get(key) for key in writer.fieldnames} for item in payload["evaluations"])
+                writer.writerows({key: item.get(key, provenance.get(key)) for key in writer.fieldnames} for item in payload["evaluations"])
         return
     if args.command == "alpha":
         from smms.alpha import AlphaBacktest, AlphaDatasetBuilder, ResearchCoverageManifest
@@ -668,7 +691,7 @@ def cli(argv: Sequence[str] | None = None) -> None:
                 def sync_build(sync_session):
                     builder = HistoricalDatasetBuilder(sync_session, chain=validate_bsc_chain(args.chain), chain_id=BSC_CHAIN_ID)
                     dataset_row, report = builder.materialize(args.from_time, args.to_time, dataset_version=args.dataset_version)
-                    return {"dataset_id": dataset_row.id, "dataset_version": dataset_row.dataset_version, "config_hash": dataset_row.config_hash, "from": dataset_row.period_from, "to": dataset_row.period_to, "report": report.as_dict()}
+                    return {"dataset_id": dataset_row.id, "dataset_version": dataset_row.dataset_version, "config_hash": dataset_row.config_hash, "source_epoch": dataset_row.source_epoch, "research_revision": dataset_row.research_revision, "input_digest": dataset_row.input_manifest.get("digest"), "lineage_url": f"/api/research/snapshots/backtest_datasets/{dataset_row.id}", "from": dataset_row.period_from, "to": dataset_row.period_to, "report": report.as_dict()}
                 return await session.run_sync(sync_build)
         payload = asyncio.run(build_dataset())
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))

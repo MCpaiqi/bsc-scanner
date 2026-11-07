@@ -12,7 +12,7 @@ def _tx(wallet: str, token: str, side: str, at: datetime, sig: str, amount: str,
         "timestamp": at,
         "tx_hash": sig,
         "token_amount": Decimal(amount),
-        "native_amount": Decimal(value),
+        "usd_value": Decimal(value),
         "price": Decimal(value) / Decimal(amount),
         "block_number": block,
     }

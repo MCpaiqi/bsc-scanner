@@ -331,6 +331,9 @@ class BSCMarketPipeline:
         return results
 
     async def _persist_pair(self, record: PairRecord) -> Pair:
+        from smms.alpha.work import anchor_blocks, invalidate_coverage, register_pair
+        from smms.evaluation import utc
+
         pair = await self.session.scalar(
             select(Pair).where(Pair.chain_id == record.chain_id, Pair.address == record.address)
         )
@@ -349,6 +352,19 @@ class BSCMarketPipeline:
             "canonical": True,
             "removed": False,
         }
+        anchor_changed = False
+        old_block = pair.creation_block if pair is not None else None
+        if pair is not None:
+            for name in ("creation_block", "creation_block_hash", "creation_timestamp"):
+                old, new = getattr(pair, name), values[name]
+                if name == "creation_timestamp":
+                    old, new = utc(old) if old is not None else None, utc(new) if new is not None else None
+                if old is not None and new is not None and old != new:
+                    anchor_changed = True
+            if anchor_changed:
+                await self.session.run_sync(lambda sync: anchor_blocks(
+                    sync, {}, observed_at=datetime.now(UTC), authoritative=False,
+                ))
         if pair is None:
             pair = Pair(chain_id=record.chain_id, address=record.address, **values)
             self.session.add(pair)
@@ -357,6 +373,13 @@ class BSCMarketPipeline:
             for key, value in values.items():
                 if value is not None:
                     setattr(pair, key, value)
+        if anchor_changed:
+            await self.session.flush()
+            known = [number for number in (old_block, pair.creation_block) if number is not None]
+            await self.session.run_sync(lambda sync: invalidate_coverage(
+                sync, from_block=min(known) if known else 0, now=datetime.now(UTC),
+            ))
+        await self.session.run_sync(lambda sync: register_pair(sync, pair))
         return pair
 
     async def _persist_event(self, record: MarketEventRecord) -> MarketEvent:
@@ -463,7 +486,7 @@ class BSCMarketPipeline:
             )
         )
 
-    async def _invalidate_event(self, raw: Any) -> None:
+    async def _invalidate_event(self, raw: Any, *, invalidate_research: bool = True) -> None:
         """Mark only the matching fork's market projection as non-canonical."""
         raw_block_hash = getattr(raw, "block_hash", None)
         if not raw_block_hash:
@@ -473,6 +496,13 @@ class BSCMarketPipeline:
             raw.raw_payload_json = metadata
             await self.session.flush()
             return
+
+        from smms.alpha.work import anchor_blocks, invalidate_removed_source
+        if invalidate_research:
+            await self.session.run_sync(lambda sync: anchor_blocks(
+                sync, {}, observed_at=datetime.now(UTC), authoritative=False,
+            ))
+        changed = False
 
         orphaned_pairs = (
             await self.session.scalars(
@@ -484,6 +514,7 @@ class BSCMarketPipeline:
             )
         ).all()
         for pair in orphaned_pairs:
+            changed = changed or (pair.canonical and not pair.removed)
             pair.canonical = False
             pair.removed = True
             if self.active_pair_registry is not None:
@@ -501,6 +532,7 @@ class BSCMarketPipeline:
         for event in candidates:
             if event.block_hash != str(raw_block_hash).lower():
                 continue
+            changed = changed or not (event.metadata_json or {}).get("orphaned", False)
             event.metadata_json = {
                 **(event.metadata_json or {}),
                 "block_hash": event.block_hash,
@@ -518,10 +550,22 @@ class BSCMarketPipeline:
             )
         ).all()
         for trade in trades:
+            changed = changed or (trade.canonical and not trade.removed)
             trade.canonical = False
             trade.removed = True
             trade.metadata_json = {**(trade.metadata_json or {}), "orphaned": True}
         await self.session.flush()
+        if invalidate_research:
+            number = getattr(raw, "block_number", None)
+            if number is None:
+                known = [row.block_number for row in [*trades, *candidates]
+                         if row.block_hash == str(raw_block_hash).lower() and row.block_number is not None]
+                known.extend(row.creation_block for row in orphaned_pairs if row.creation_block is not None)
+                number = min(known) if known else None
+            if number is not None or changed:
+                await self.session.run_sync(lambda sync: invalidate_removed_source(
+                    sync, block_number=number, block_hash=str(raw_block_hash), now=datetime.now(UTC), force=changed,
+                ))
 
     @staticmethod
     def _attach_pair_token(record: MarketEventRecord, pair: Pair) -> MarketEventRecord:

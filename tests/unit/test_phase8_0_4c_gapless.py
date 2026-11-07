@@ -12,7 +12,7 @@ from smms import runtime
 from smms.chains.base import ChainLog
 from smms.chains.bsc.active_pairs import ActivePairRegistry, DynamicPairSubscription
 from smms.chains.bsc.websocket import BlockWindowDedupe
-from smms.db.models import Base, Pair
+from smms.db.models import Base, Pair, RawChainEvent, StreamCheckpoint
 from smms.ingestion.bsc_stream import BSCRealtimeIngestionService
 from smms.main import _finalize_live_bsc_readiness
 from smms.market.models import PairRecord
@@ -187,11 +187,16 @@ async def test_factory_startup_handoff_captures_block_101_once_after_barrier_100
     async with async_sessionmaker(engine, expire_on_commit=False)() as session:
         service = BSCRealtimeIngestionService(dynamic, session=session, chain_provider=Provider())
         service._build_dynamic_stream = lambda *_args: dynamic
-        processed: list[str] = []
-        service.process_log = lambda log: _append_async(processed, log.transaction_hash)
-        service.confirm_through = lambda _block: _return_async(0)
         await service.run()
-        assert processed == ["0xhandoff"]
+        # Exercise the real owned transaction; helper mocks would bypass the
+        # persistence/cancellation race this handoff must survive.
+        rows = (await session.scalars(select(RawChainEvent))).all()
+        checkpoint = await session.scalar(select(StreamCheckpoint).where(
+            StreamCheckpoint.stream_name == "bsc_realtime",
+        ))
+        assert [row.transaction_hash for row in rows] == ["0xhandoff"]
+        assert checkpoint.last_processed_block == 101
+        assert checkpoint.status == "stopped"
     await engine.dispose()
 
 

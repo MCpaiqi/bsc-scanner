@@ -31,7 +31,8 @@ def _dec(value: Any) -> Decimal | None:
     if value is None:
         return None
     try:
-        return Decimal(str(value))
+        number = Decimal(str(value))
+        return number if number.is_finite() else None
     except (InvalidOperation, TypeError, ValueError):
         return None
 
@@ -99,6 +100,11 @@ class WalletProfile:
     chain_activity: int = 0
     threshold_hits: dict[str, int] = field(default_factory=dict)
     behavioral_indicators: dict[str, Any] = field(default_factory=dict)
+    valued_positions: int = 0
+    unvalued_positions: int = 0
+    data_status: str = "UNKNOWN"
+    known_invested_usd: Decimal = Decimal(0)
+    known_returned_usd: Decimal = Decimal(0)
 
     @property
     def wash_trading_probability(self) -> Decimal:
@@ -130,7 +136,7 @@ class WalletProfile:
                 bot_probability=self.bot_probability,
                 wash_trading_probability=self.wash_probability,
                 sample_size=self.sample_size,
-                data_completeness=Decimal("0.8") if self.sample_size else Decimal(0),
+                data_completeness=Decimal("0.8") * Decimal(self.valued_positions) / Decimal(self.sample_size) if self.sample_size else Decimal(0),
                 trade_quality=Decimal(1) - (self.bot_probability + self.wash_probability) / Decimal(2),
             )
         ).score
@@ -145,7 +151,7 @@ class WalletProfile:
             early_entry_rate=self.early_entry_rate, high_multiple_rate=high_multiple_rate,
             consistency_rate=self.consistency, rug_exposure=self.rug_exposure,
             bot_probability=self.bot_probability, wash_trading_probability=self.wash_probability,
-            sample_size=self.sample_size, data_completeness=Decimal("0.8") if self.sample_size else Decimal(0),
+            sample_size=self.sample_size, data_completeness=Decimal("0.8") * Decimal(self.valued_positions) / Decimal(self.sample_size) if self.sample_size else Decimal(0),
             trade_quality=Decimal(1) - (self.bot_probability + self.wash_probability) / Decimal(2),
         ))
 
@@ -163,7 +169,15 @@ class WalletProfile:
         return self.number_trades
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        if self.unvalued_positions or not self.total_tokens:
+            # Neutral arithmetic inputs for scoring are not measured outcomes.
+            for name in ("roi", "median_roi", "median_multiple", "best_multiple", "worst_multiple",
+                         "total_invested", "total_returned", "realized_pnl", "unrealized_pnl", "max_drawdown",
+                         "realized_roi", "unrealized_roi", "win_rate", "average_win", "average_loss",
+                         "profit_factor", "average_position_size", "concentration", "exit_efficiency"):
+                data[name] = None
+        return data
 
 
 def _normalise_trades(
@@ -180,11 +194,25 @@ def _normalise_trades(
         timestamp = _utc(_get(row, "timestamp", _get(row, "block_timestamp")))
         if not token or side not in {"BUY", "SELL"} or timestamp is None:
             continue
-        # early_buyers expects usd_value; native_amount is the canonical value
-        # available on TradeEvent rows and is a safe fallback for accounting.
-        usd_value = _get(row, "usd_value")
+        usd_value = _dec(_get(row, "value_usd"))
         if usd_value is None:
-            usd_value = _get(row, "native_amount")
+            usd_value = _dec(_get(row, "usd_value"))
+        if usd_value is not None and usd_value < 0:
+            usd_value = None
+        quantity = _dec(_get(row, "token_amount", _get(row, "amount")))
+        if quantity is not None and quantity <= 0:
+            quantity = None
+        metadata = _get(row, "metadata_json", _get(row, "metadata", {})) or {}
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        price = _dec(_get(row, "price_usd"))
+        if price is None:
+            price = _dec(metadata.get("price_usd"))
+        if price is None and _get(row, "price_basis", metadata.get("price_basis")) == "USD":
+            price = _dec(_get(row, "price"))
+        if price is None and usd_value is not None and quantity:
+            price = usd_value / quantity
+        if price is not None and price <= 0:
+            price = None
         result.append({
             "wallet_address": str(trader or wallet or ""),
             "token_address": str(token),
@@ -193,13 +221,13 @@ def _normalise_trades(
             "signature": _get(row, "signature", _get(row, "tx_hash", "")),
             "event_index": _get(row, "event_index", 0),
             "block_number": _get(row, "block_number"),
-            "amount": _get(row, "amount", _get(row, "token_amount")),
-            "token_amount": _get(row, "token_amount", _get(row, "amount")),
+            "amount": quantity,
+            "token_amount": quantity,
             "usd_value": usd_value,
-            "price": _get(row, "price"),
+            "price": price,
             "market_cap": _get(row, "market_cap"),
             "liquidity": _get(row, "liquidity"),
-            "metadata_json": _get(row, "metadata_json", _get(row, "metadata", {})) or {},
+            "metadata_json": dict(metadata),
         })
     return result
 
@@ -349,7 +377,9 @@ def build_wallet_profile(
     entry_timing = _ratio(Decimal(early), Decimal(total))
     delays = [_dec(r.get("entry_delay_seconds")) for r in rows if _dec(r.get("entry_delay_seconds")) is not None]
     average_delay = _ratio(sum(delays, Decimal(0)), Decimal(len(delays)))
-    return WalletProfile(wallet=wallet, chain=chain, total_tokens=total, closed_positions=closed, open_positions=open_count, wins=wins, losses=losses, win_rate=_ratio(Decimal(wins), Decimal(wins + losses)), total_invested=invested, total_returned=returned, realized_pnl=realized, unrealized_pnl=unrealized, roi=_ratio(realized + unrealized, invested), median_roi=Decimal(str(median(rois))) if rois else Decimal(0), median_multiple=Decimal(str(median(multiples))) if multiples else Decimal(0), best_multiple=max(multiples, default=Decimal(0)), worst_multiple=min(multiples, default=Decimal(0)), early_entry_rate=entry_timing, consistency=consistency, rug_exposure=_ratio(Decimal(rugs), Decimal(total)), bot_probability=bot_probability, wash_probability=wash_probability, confidence="HIGH" if total >= 10 else ("MEDIUM" if total >= 4 else "LOW"), number_trades=number_trades, sample_size=total, average_win=avg_win, average_loss=avg_loss, profit_factor=profit_factor, max_drawdown=max_dd, average_position_size=avg_size, concentration=concentration, liquidity_dependency=liquidity_dependency, entry_timing=entry_timing, average_entry_delay_seconds=average_delay, average_holding_period_seconds=avg_holding, holding_period=avg_holding, exit_efficiency=max(Decimal(0), min(Decimal(1), exit_efficiency)), realized_roi=realized_roi, unrealized_roi=unrealized_roi, win_streak=win_streak, loss_streak=loss_streak, chain_activity=number_trades, threshold_hits=threshold_hits, behavioral_indicators=indicators)
+    known_invested = sum((t["usd_value"] for t in normalized if t["side"] == "BUY" and t["usd_value"] is not None), Decimal(0)) if normalized else invested
+    known_returned = sum((t["usd_value"] for t in normalized if t["side"] == "SELL" and t["usd_value"] is not None), Decimal(0)) if normalized else returned
+    return WalletProfile(wallet=wallet, chain=chain, total_tokens=total, closed_positions=closed, open_positions=open_count, wins=wins, losses=losses, win_rate=_ratio(Decimal(wins), Decimal(wins + losses)), total_invested=invested, total_returned=returned, realized_pnl=realized, unrealized_pnl=unrealized, roi=_ratio(realized + unrealized, invested) if len(rois) == total else Decimal(0), median_roi=Decimal(str(median(rois))) if rois else Decimal(0), median_multiple=Decimal(str(median(multiples))) if multiples else Decimal(0), best_multiple=max(multiples, default=Decimal(0)), worst_multiple=min(multiples, default=Decimal(0)), early_entry_rate=entry_timing, consistency=consistency, rug_exposure=_ratio(Decimal(rugs), Decimal(total)), bot_probability=bot_probability, wash_probability=wash_probability, confidence="HIGH" if len(rois) >= 10 else ("MEDIUM" if len(rois) >= 4 else "LOW"), number_trades=number_trades, sample_size=total, average_win=avg_win, average_loss=avg_loss, profit_factor=profit_factor, max_drawdown=max_dd, average_position_size=avg_size, concentration=concentration, liquidity_dependency=liquidity_dependency, entry_timing=entry_timing, average_entry_delay_seconds=average_delay, average_holding_period_seconds=avg_holding, holding_period=avg_holding, exit_efficiency=max(Decimal(0), min(Decimal(1), exit_efficiency)), realized_roi=realized_roi, unrealized_roi=unrealized_roi, win_streak=win_streak, loss_streak=loss_streak, chain_activity=number_trades, threshold_hits=threshold_hits, behavioral_indicators=indicators, known_invested_usd=known_invested, known_returned_usd=known_returned, valued_positions=len(rois), unvalued_positions=total-len(rois), data_status="KNOWN" if total and len(rois) == total else "DEGRADED" if rois else "UNKNOWN")
 
 
 def _row_to_dict(row: Any) -> dict[str, Any]:

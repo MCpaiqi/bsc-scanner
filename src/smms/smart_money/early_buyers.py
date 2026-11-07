@@ -1,4 +1,5 @@
 """Replayable early buyer discovery and Decimal position accounting."""
+from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -19,9 +20,9 @@ class EarlyBuyerConfig:
 
 @dataclass(frozen=True)
 class PositionSnapshot:
-    cumulative_bought: Decimal
-    cumulative_sold: Decimal
-    current_balance: Decimal
+    cumulative_bought: Decimal | None
+    cumulative_sold: Decimal | None
+    current_balance: Decimal | None
     total_invested: Decimal | None
     total_returned: Decimal | None
     realized_pnl: Decimal | None
@@ -37,7 +38,7 @@ class PositionSnapshot:
 class EarlyBuyer:
     wallet_address: str
     first_buy_time: datetime
-    total_buy_usd: Decimal = Decimal(0)
+    total_buy_usd: Decimal | None = None
     entry_market_cap: Decimal | None = None
     tx_signature: str = ""
     first_buy_block: int | None = None
@@ -78,7 +79,9 @@ class EarlyBuyer:
 def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 def _decimal(value: Any) -> Decimal | None:
-    try: return None if value is None else Decimal(str(value))
+    try:
+        result = None if value is None else Decimal(str(value))
+        return result if result is not None and result.is_finite() else None
     except (InvalidOperation, TypeError, ValueError): return None
 def _metadata(tx: dict[str, Any]) -> dict[str, Any]:
     value = tx.get("metadata_json") or tx.get("metadata") or {}
@@ -125,36 +128,80 @@ def _events_for(token: str, transactions: Iterable[dict[str, Any]], created: dat
         if identity in seen: continue
         seen.add(identity)
         events.append({"tx": tx, "wallet": str(wallet), "timestamp": timestamp, "side": side, "usd": _value(tx, side), "amount": _amount(tx, side), "price": _price(tx), "metadata": metadata})
-    return sorted(events, key=lambda e: (e["timestamp"], e["tx"].get("block_number") or 0, str(e["tx"].get("signature") or e["tx"].get("tx_hash"))))
+    return sorted(events, key=_event_order)
+
+
+def _event_order(event):
+    tx = event["tx"]
+    try:
+        index = int(tx.get("event_index") or 0)
+    except (TypeError, ValueError):
+        index = 0
+    return (event["timestamp"], tx.get("block_number") or 0, index,
+            str(tx.get("signature") or tx.get("tx_hash") or ""))
 
 def calculate_position(events: Iterable[dict[str, Any]]) -> PositionSnapshot:
-    lots, bought, sold, invested, returned, realized = [], Decimal(0), Decimal(0), Decimal(0), Decimal(0), Decimal(0)
+    lots, bought, sold, invested, returned, realized = deque(), Decimal(0), Decimal(0), Decimal(0), Decimal(0), Decimal(0)
     realized_known, current_price, current_mc, last_ts, last_block, reorg = True, None, None, None, None, False
-    for event in sorted(events, key=lambda e: (e["timestamp"], str(e["tx"].get("signature", "")))):
+    bought_known = sold_known = inventory_known = invested_known = returned_known = True
+    for event in sorted(events, key=_event_order):
         tx, side, qty, usd = event["tx"], event["side"], event["amount"], event["usd"]
         last_ts, last_block, reorg = event["timestamp"], tx.get("block_number"), reorg or bool(tx.get("reorg_corrected") or event["metadata"].get("reorg_corrected"))
         if event["price"] is not None: current_price = event["price"]
         if _decimal(tx.get("market_cap")) is not None: current_mc = _decimal(tx.get("market_cap"))
         if side == "BUY":
-            if qty is not None: lots.append([qty, usd or Decimal(0)]); bought += qty
-            if usd is not None: invested += usd
+            if qty is not None and qty >= 0:
+                if qty > 0:
+                    lots.append([qty, usd])
+                    bought += qty
+            else:
+                bought_known = inventory_known = False
+            if usd is not None:
+                invested += usd
+            else:
+                invested_known = False
             continue
-        if qty is not None: sold += qty
-        if usd is not None: returned += usd
-        if qty is None or usd is None: realized_known = False; continue
-        remaining, cost = qty, Decimal(0)
+        if qty is not None and qty >= 0:
+            sold += qty
+        else:
+            sold_known = inventory_known = realized_known = False
+        if usd is not None:
+            returned += usd
+        else:
+            returned_known = realized_known = False
+        if qty is None or qty <= 0:
+            continue
+        remaining, cost, cost_known = qty, Decimal(0), True
         while remaining > 0 and lots:
-            lot_qty, lot_cost = lots[0]; matched = min(remaining, lot_qty)
-            cost += lot_cost * matched / lot_qty if lot_qty else Decimal(0); remaining -= matched
-            lots[0] = [lot_qty - matched, lot_cost * (lot_qty - matched) / lot_qty] if matched < lot_qty else [Decimal(0), Decimal(0)]
-            if lots[0][0] == 0: lots.pop(0)
-        if remaining > 0: realized_known = False
-        realized += usd - cost
-    balance, cost_remaining = sum((x[0] for x in lots), Decimal(0)), sum((x[1] for x in lots), Decimal(0))
-    unrealized = balance * current_price - cost_remaining if current_price is not None else None
-    total_value = returned + balance * current_price if current_price is not None else (returned if balance == 0 and returned else None)
-    roi = (total_value - invested) / invested if total_value is not None and invested else None
-    return PositionSnapshot(bought, sold, balance, invested or None, returned or None, realized if realized_known else None, unrealized, roi, current_price, current_mc, last_ts, last_block, reorg)
+            lot_qty, lot_cost = lots.popleft()
+            matched = min(remaining, lot_qty)
+            if lot_cost is None:
+                cost_known = False
+            else:
+                cost += lot_cost * matched / lot_qty
+            remaining -= matched
+            if matched < lot_qty:
+                lots.appendleft([lot_qty - matched, lot_cost * (lot_qty - matched) / lot_qty if lot_cost is not None else None])
+        if remaining > 0:
+            inventory_known = False
+        if not cost_known or not inventory_known:
+            realized_known = False
+        if usd is not None:
+            realized += usd - cost
+    balance = sum((x[0] for x in lots), Decimal(0)) if inventory_known else None
+    cost_remaining = sum((x[1] for x in lots), Decimal(0)) if all(x[1] is not None for x in lots) else None
+    unrealized = (balance * current_price - cost_remaining
+                  if balance is not None and current_price is not None and cost_remaining is not None
+                  else Decimal(0) if balance == 0 else None)
+    total_value = (returned + balance * current_price
+                   if returned_known and balance is not None and current_price is not None
+                   else returned if returned_known and balance == 0 else None)
+    roi = (total_value - invested) / invested if total_value is not None and invested_known and invested else None
+    return PositionSnapshot(bought if bought_known else None, sold if sold_known else None, balance,
+                            invested if invested_known and invested else None,
+                            returned if returned_known and returned else None,
+                            realized if realized_known else None, unrealized, roi,
+                            current_price, current_mc, last_ts, last_block, reorg)
 
 def identify_early_buyers(token_address: str, transactions: Iterable[dict[str, Any]], *, token_created_at: datetime, config: EarlyBuyerConfig | None = None, token_created_block: int | None = None) -> list[EarlyBuyer]:
     active, created = config or EarlyBuyerConfig(), _utc(token_created_at)
@@ -170,7 +217,7 @@ def identify_early_buyers(token_address: str, transactions: Iterable[dict[str, A
         if active.window_type == "minutes" and age > active.effective_window_value * 60: continue
         if active.window_type == "blocks" and token_created_block is not None and (first["tx"].get("block_number") or 0) > token_created_block + active.effective_window_value: continue
         firsts.append((wallet, first, wallet_events))
-    firsts.sort(key=lambda x: (x[1]["timestamp"], x[1]["tx"].get("block_number") or 0, x[0]))
+    firsts.sort(key=lambda x: (*_event_order(x[1]), x[0]))
     if active.window_type == "buyers": firsts = firsts[:active.effective_window_value]
     result = []
     for rank, (wallet, first, wallet_events) in enumerate(firsts, 1):
@@ -187,7 +234,27 @@ def identify_early_buyers(token_address: str, transactions: Iterable[dict[str, A
                     pass
             if tx.get("graduated") is True or metadata.get("graduated") is True:
                 survived_to_graduation = True
-        result.append(EarlyBuyer(wallet_address=wallet, first_buy_time=first["timestamp"], first_buy_block=first["tx"].get("block_number"), total_buy_usd=sum((e["usd"] or Decimal(0) for e in wallet_events if e["side"] == "BUY" and e["timestamp"] <= deadline), Decimal(0)), entry_market_cap=mc, tx_signature=str(first["tx"].get("signature") or first["tx"].get("tx_hash")), token_address=token_address, token_age_at_buy=age, token_age_at_buy_seconds=age, first_buy_market_cap=mc, first_buy_price=first["price"], first_buy_amount=first["amount"], first_buy_usd=first["usd"], buy_count=sum(1 for e in wallet_events if e["side"] == "BUY"), sell_count=sum(1 for e in wallet_events if e["side"] == "SELL"), total_buy=pos.total_invested, total_sell=pos.total_returned, realized_pnl=pos.realized_pnl, unrealized_pnl=pos.unrealized_pnl, buy_rank=rank, entry_delay_seconds=age, entry_time_bucket=_bucket(age), current_balance=pos.current_balance, total_invested=pos.total_invested, total_returned=pos.total_returned, roi=pos.roi, current_price=pos.current_price, market_cap_status="KNOWN" if mc is not None else "UNKNOWN", position=pos, sold_before_ath=sold_before_ath, survived_to_graduation=survived_to_graduation, holding_duration=int((pos.last_trade_timestamp - first["timestamp"]).total_seconds()) if pos.last_trade_timestamp else 0, holding_duration_seconds=int((pos.last_trade_timestamp - first["timestamp"]).total_seconds()) if pos.last_trade_timestamp else 0, is_bot=bool(first["tx"].get("is_bot", False)), bot_probability=_decimal(first["tx"].get("bot_probability")), evidence={"observed_event_count": len(wallet_events)}))
+        buy_values = [e["usd"] for e in wallet_events if e["side"] == "BUY" and e["timestamp"] <= deadline]
+        total_buy_usd = sum(buy_values, Decimal(0)) if all(v is not None for v in buy_values) else None
+        result.append(EarlyBuyer(
+            wallet_address=wallet, first_buy_time=first["timestamp"], first_buy_block=first["tx"].get("block_number"),
+            total_buy_usd=total_buy_usd, entry_market_cap=mc,
+            tx_signature=str(first["tx"].get("signature") or first["tx"].get("tx_hash")), token_address=token_address,
+            token_age_at_buy=age, token_age_at_buy_seconds=age, first_buy_market_cap=mc,
+            first_buy_price=first["price"], first_buy_amount=first["amount"], first_buy_usd=first["usd"],
+            buy_count=sum(1 for e in wallet_events if e["side"] == "BUY"),
+            sell_count=sum(1 for e in wallet_events if e["side"] == "SELL"),
+            total_buy=pos.total_invested, total_sell=pos.total_returned,
+            realized_pnl=pos.realized_pnl, unrealized_pnl=pos.unrealized_pnl, buy_rank=rank,
+            entry_delay_seconds=age, entry_time_bucket=_bucket(age), current_balance=pos.current_balance,
+            total_invested=pos.total_invested, total_returned=pos.total_returned, roi=pos.roi,
+            current_price=pos.current_price, market_cap_status="KNOWN" if mc is not None else "UNKNOWN", position=pos,
+            sold_before_ath=sold_before_ath, survived_to_graduation=survived_to_graduation,
+            holding_duration=int((pos.last_trade_timestamp - first["timestamp"]).total_seconds()) if pos.last_trade_timestamp else 0,
+            holding_duration_seconds=int((pos.last_trade_timestamp - first["timestamp"]).total_seconds()) if pos.last_trade_timestamp else 0,
+            is_bot=bool(first["tx"].get("is_bot", False)), bot_probability=_decimal(first["tx"].get("bot_probability")),
+            evidence={"observed_event_count": len(wallet_events)},
+        ))
     return result
 
 __all__ = ["EarlyBuyer", "EarlyBuyerConfig", "PositionSnapshot", "calculate_position", "identify_early_buyers"]

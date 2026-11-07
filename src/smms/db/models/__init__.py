@@ -1,3 +1,4 @@
+from .alpha import AlphaBlockAnchor, AlphaCoverageJob, AlphaCoverageReceipt, AlphaWorkCursor
 from .analyst import AlertHistory, AlertNotification, AlertRule, RadarAnnotation
 from .audit import RadarAuditJob, RadarAuditJobStatus
 from .base import Base, TimestampMixin, utc_now
@@ -35,16 +36,38 @@ from .entities import (
     WalletTokenPosition,
     WalletTransaction,
 )
-from .live import LiveSignalObservation, LiveSignalOutcome
+from .live import (
+    ForwardEvaluationCursor,
+    ForwardEvaluationJob,
+    LiveSignalObservation,
+    LiveSignalOutcome,
+)
 from .market import AlphaSnapshot, TokenMarketSnapshot
-from .radar import RadarCandidate, RadarCandidateEvidence, RadarCandidateHistory
+from .radar import (
+    RadarCandidate,
+    RadarCandidateEvidence,
+    RadarCandidateHistory,
+    RadarFeatureObservation,
+)
+from .research import (
+    ResearchEpoch,
+    ResearchRebuildCursor,
+    ResearchRebuildJob,
+    ResearchSnapshotDependency,
+    ResearchSnapshotLock,
+    ResearchState,
+)
 from .runtime import EvidenceObservationRecord, RuntimeWorkerStatus, WorkerHeartbeat
 
 __all__ = [
     "AlertHistory",
     "AlertNotification",
     "AlertRule",
+    "AlphaBlockAnchor",
+    "AlphaCoverageJob",
+    "AlphaCoverageReceipt",
     "AlphaSnapshot",
+    "AlphaWorkCursor",
     "BacktestDataset",
     "BacktestDatasetRow",
     "Base",
@@ -52,6 +75,8 @@ __all__ = [
     "EarlyBuyer",
     "EventType",
     "EvidenceObservationRecord",
+    "ForwardEvaluationCursor",
+    "ForwardEvaluationJob",
     "IngestionRun",
     "LiveSignalObservation",
     "LiveSignalOutcome",
@@ -64,9 +89,16 @@ __all__ = [
     "RadarCandidate",
     "RadarCandidateEvidence",
     "RadarCandidateHistory",
+    "RadarFeatureObservation",
     "RawChainEvent",
     "RawChainRecord",
     "RecordStatus",
+    "ResearchEpoch",
+    "ResearchRebuildCursor",
+    "ResearchRebuildJob",
+    "ResearchSnapshotDependency",
+    "ResearchSnapshotLock",
+    "ResearchState",
     "RuntimeWorkerStatus",
     "Signal",
     "SignalType",

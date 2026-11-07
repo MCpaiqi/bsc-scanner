@@ -1,11 +1,12 @@
 """Repositories for versioned token risk snapshots."""
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased
 
 from smms.chains.constants import normalize_address
 from smms.db.models import TokenRiskSnapshot
+from smms.research.publication import publish_snapshot
 
 
 class TokenRiskSnapshotRepository:
@@ -14,22 +15,7 @@ class TokenRiskSnapshotRepository:
 
     def upsert(self, record: TokenRiskSnapshot) -> TokenRiskSnapshot:
         record.token_address = normalize_address(record.token_address, chain=record.chain)
-        existing = self.session.scalar(
-            select(TokenRiskSnapshot).where(
-                TokenRiskSnapshot.chain == record.chain,
-                TokenRiskSnapshot.token_address == record.token_address,
-                TokenRiskSnapshot.as_of == record.as_of,
-                TokenRiskSnapshot.risk_version == record.risk_version,
-            )
-        )
-        if existing is None:
-            self.session.add(record)
-            self.session.flush()
-            return record
-        for name in ("contract_risk", "liquidity_risk", "holder_risk", "behavior_risk", "bot_probability", "wash_probability", "overall_risk", "confidence", "evidence_json", "dimensions_json"):
-            setattr(existing, name, getattr(record, name))
-        existing.updated_at = datetime.now(UTC)
-        return existing
+        return publish_snapshot(self.session, record)
 
     def get_latest(self, token_address: str, *, chain: str, risk_version: str, as_of: datetime) -> TokenRiskSnapshot | None:
         return self.session.scalar(

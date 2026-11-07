@@ -24,6 +24,7 @@ def _snapshot(*, token: str, pair: str, created: datetime, observed: int, score:
         observation_seconds=observed,
         alpha_score=Decimal(score),
         score_version=SCORE_VERSION,
+        task_status="TRACKING",
         scored_at=created + timedelta(seconds=observed),
         features_json={"unique_buyers": 3},
         components_json={"momentum": "5"},

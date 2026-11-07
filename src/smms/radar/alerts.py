@@ -12,7 +12,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from smms.db.models import AlertHistory, AlertNotification, AlertRule
+from smms.db.models import AlertHistory, AlertNotification, AlertRule, RadarCandidate, Token
+from smms.evaluation import utc
 
 ALLOWED_FIELDS = {
     "smart_money_score": "smart_money_score",
@@ -180,6 +181,20 @@ def evaluate_enabled_rules(
     state: Mapping[str, Any],
     at: datetime | None = None,
 ) -> list[dict[str, Any]]:
+    from smms.research.state import capture_epoch
+
+    from .projection import projection_for
+
+    candidate = session.scalar(select(RadarCandidate).join(Token, Token.id == RadarCandidate.token_id).where(
+        Token.chain == chain, Token.address == token_address,
+    ))
+    projection = projection_for(session, candidate) if candidate else None
+    if projection is not None:
+        if projection.snapshot_status != "VALID" or utc(projection.as_of) > utc(at or datetime.now(UTC)):
+            return []
+        state = projection.features_json
+    elif capture_epoch(session, chain) > 0 or (candidate and candidate.projection_id is not None):
+        return []
     results = []
     for rule in session.scalars(select(AlertRule).where(AlertRule.enabled.is_(True))).all():
         result = evaluate_and_notify(

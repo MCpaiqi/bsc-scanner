@@ -63,7 +63,10 @@ async def test_project_reads_only_candidates_for_the_event_token(monkeypatch) ->
         ]
         assert candidate_queries
         assert all(
-            "join tokens" in statement and "tokens.address in" in statement
+            "where" in statement and (
+                ("join tokens" in statement and ("tokens.address in" in statement or "tokens.address =" in statement))
+                or "radar_candidates.id =" in statement
+            )
             for statement in candidate_queries
         )
     finally:

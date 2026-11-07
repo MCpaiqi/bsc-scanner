@@ -15,6 +15,7 @@ from smms.api.demo import demo_bsc_tokens
 from smms.api.radar import alpha_router
 from smms.api.radar import meta_router as radar_meta_router
 from smms.api.radar import router as radar_router
+from smms.api.research import router as research_router
 from smms.backtest.signal_engine import run_backtest
 from smms.chains.constants import (
     BSC_CHAIN_ID,
@@ -28,8 +29,6 @@ from smms.db.database import check_database, session_scope
 from smms.db.models import (
     BacktestDataset,
     BacktestDatasetRow,
-    MarketEvent,
-    Pair,
     RuntimeWorkerStatus,
     StreamCheckpoint,
     Token,
@@ -46,17 +45,18 @@ from smms.ingestion.market import DexScreenerMarketProvider, MarketFeedService
 from smms.observability import freshness_status, metrics, observability, source_health_registry
 from smms.radar.audit import AuditQueue
 from smms.radar.events import event_bus, subscribe_redis
+from smms.research.reads import CanonicalResearchRead, StaleResearchRead
 from smms.risk.engine import RISK_VERSION
 from smms.smart_money import (
     EarlyBuyerConfig,
     build_wallet_knowledge_graph,
     calculate_smart_money_alpha,
     detect_wallet_clusters,
-    identify_early_buyers,
     replay_historical_smart_money,
     smart_money_flow,
 )
 from smms.smart_money.aggregation import SCORE_VERSION
+from smms.smart_money.replay import StaleReplayInputs, load_replay_inputs
 
 STATIC_DIR = Path(__file__).with_name("static")
 _WEB_DIST_CANDIDATES = (
@@ -70,6 +70,7 @@ app.include_router(radar_router)
 app.include_router(radar_meta_router)
 app.include_router(alpha_router)
 app.include_router(analyst_router)
+app.include_router(research_router)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 if WEB_DIST.is_dir():
     app.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="web-assets")
@@ -114,17 +115,33 @@ async def stop_runtime_subscribers() -> None:
 async def _dataset_or_404(
     dataset_id: int, session
 ) -> tuple[BacktestDataset, list[dict[str, object]]]:
-    dataset = await session.get(BacktestDataset, dataset_id)
+    dataset = await session.scalar(select(BacktestDataset).where(
+        BacktestDataset.id == dataset_id, BacktestDataset.chain == "bsc",
+    ).execution_options(include_invalid_snapshots=True, populate_existing=True))
     if dataset is None:
         raise HTTPException(status_code=404, detail="backtest dataset not found")
+    await _assert_dataset_current(session, dataset_id)
     records = (
         await session.scalars(
             select(BacktestDatasetRow)
             .where(BacktestDatasetRow.dataset_id == dataset.id)
             .order_by(BacktestDatasetRow.signal_timestamp)
+            .execution_options(populate_existing=True)
         )
     ).all()
-    return dataset, [record.payload_json for record in records]
+    await _assert_dataset_current(session, dataset_id)
+    from copy import deepcopy
+
+    return dataset, [deepcopy(record.payload_json) for record in records]
+
+
+async def _assert_dataset_current(session, dataset_id):
+    current = await session.scalar(select(BacktestDataset.id).where(BacktestDataset.id == dataset_id))
+    if current is None:
+        raise HTTPException(status_code=409, detail={
+            "status": "REBUILDING", "reason": "DATASET_INVALIDATED", "dataset_id": dataset_id,
+            "lineage_url": f"/api/research/snapshots/backtest_datasets/{dataset_id}",
+        })
 
 
 def _trade_payload(row: TradeEvent) -> dict[str, object]:
@@ -138,8 +155,9 @@ def _trade_payload(row: TradeEvent) -> dict[str, object]:
         "token_address": row.token_address,
         "token_amount": row.token_amount,
         "native_amount": row.native_amount,
-        "usd_value": row.metadata_json.get("usd_value") if row.metadata_json else None,
+        "usd_value": row.value_usd,
         "price": row.price,
+        "price_usd": row.price_usd,
         "market_cap": row.market_cap,
         "liquidity": row.liquidity,
         "block_number": row.block_number,
@@ -229,6 +247,13 @@ def _flap_readiness() -> dict[str, object]:
     }
 
 
+def _snapshot_provenance(row):
+    return {"research_revision": row.research_revision, "source_epoch": row.source_epoch,
+            "previous_snapshot_id": row.previous_snapshot_id,
+            "input_digest": (row.input_manifest or {}).get("digest"),
+            "lineage_url": f"/api/research/snapshots/{row.__tablename__}/{row.id}"}
+
+
 def _wallet_snapshot_payload(
     row: WalletSmartMoneySnapshot, *, network_influence: Decimal | float = 0
 ) -> dict[str, object]:
@@ -236,6 +261,7 @@ def _wallet_snapshot_payload(
     alpha = calculate_smart_money_alpha(payload, network_influence=network_influence)
     payload.update(
         {
+            **_snapshot_provenance(row),
             "wallet": row.wallet_address,
             "score": row.score,
             "smart_money_score": row.score,
@@ -268,6 +294,7 @@ def _wallet_snapshot_payload(
 
 def _token_snapshot_payload(row: TokenSmartMoneySnapshot) -> dict[str, object]:
     return {
+        **_snapshot_provenance(row),
         "token_address": row.token_address,
         "smart_wallet_count": row.smart_wallet_count,
         "smart_money_buy_usd": row.smart_money_buy_usd,
@@ -288,6 +315,7 @@ def _token_snapshot_payload(row: TokenSmartMoneySnapshot) -> dict[str, object]:
 def _risk_snapshot_payload(row: TokenRiskSnapshot) -> dict[str, object]:
     dimensions = row.dimensions_json or {}
     return {
+        **_snapshot_provenance(row),
         "token": row.token_address,
         "contract_risk": row.contract_risk,
         "liquidity_risk": row.liquidity_risk,
@@ -521,24 +549,24 @@ async def backtest_summary(
     settings = get_settings()
     async with session_scope(settings) as session:
         dataset = await session.scalar(
-            select(BacktestDataset).order_by(BacktestDataset.build_timestamp.desc())
+            select(BacktestDataset).where(BacktestDataset.chain == "bsc")
+            .order_by(BacktestDataset.build_timestamp.desc(), BacktestDataset.id.desc()).limit(1)
+            .execution_options(include_invalid_snapshots=True)
         )
         if dataset is None:
             return {"status": "INSUFFICIENT_DATA", "datasets": []}
-        records = (
-            await session.scalars(
-                select(BacktestDatasetRow).where(BacktestDatasetRow.dataset_id == dataset.id)
-            )
-        ).all()
+        dataset, rows = await _dataset_or_404(dataset.id, session)
         result = run_backtest(
-            [record.payload_json for record in records], strategy=strategy, threshold=threshold
+            rows, strategy=strategy, threshold=threshold
         )
+        await _assert_dataset_current(session, dataset.id)
     return result.summary | {
         "status": result.status,
         "strategy": strategy,
         "model_version": result.model_version,
         "dataset_id": dataset.id,
         "dataset_version": dataset.dataset_version,
+        **_snapshot_provenance(dataset),
     }
 
 
@@ -549,7 +577,9 @@ async def backtest_signals(
     settings = get_settings()
     async with session_scope(settings) as session:
         dataset = await session.scalar(
-            select(BacktestDataset).order_by(BacktestDataset.build_timestamp.desc())
+            select(BacktestDataset).where(BacktestDataset.chain == "bsc")
+            .order_by(BacktestDataset.build_timestamp.desc(), BacktestDataset.id.desc()).limit(1)
+            .execution_options(include_invalid_snapshots=True)
         )
         if dataset is None:
             return {
@@ -558,17 +588,15 @@ async def backtest_signals(
                 "signals": [],
                 "count": 0,
             }
-        records = (
-            await session.scalars(
-                select(BacktestDatasetRow).where(BacktestDatasetRow.dataset_id == dataset.id)
-            )
-        ).all()
-    result = run_backtest([record.payload_json for record in records], strategy=strategy)
+        dataset, rows = await _dataset_or_404(dataset.id, session)
+        result = run_backtest(rows, strategy=strategy)
+        await _assert_dataset_current(session, dataset.id)
     return {
         "status": result.status,
         "model_version": result.model_version,
         "dataset_id": dataset.id,
         "dataset_version": dataset.dataset_version,
+        **_snapshot_provenance(dataset),
         "signals": [signal.as_dict() for signal in result.signals[-limit:]],
         "count": len(result.signals),
     }
@@ -590,6 +618,7 @@ async def backtest_datasets(limit: int = Query(50, ge=1, le=200)) -> dict[str, o
             {
                 "id": row.id,
                 "dataset_version": row.dataset_version,
+                **_snapshot_provenance(row),
                 "chain": row.chain,
                 "from": row.period_from,
                 "to": row.period_to,
@@ -610,11 +639,13 @@ async def backtest_dataset_summary(
     settings = get_settings()
     async with session_scope(settings) as session:
         dataset, rows = await _dataset_or_404(dataset_id, session)
-    result = run_backtest(rows, strategy=strategy, threshold=threshold)
+        result = run_backtest(rows, strategy=strategy, threshold=threshold)
+        await _assert_dataset_current(session, dataset.id)
     return result.summary | {
         "status": result.status,
         "dataset_id": dataset.id,
         "dataset_version": dataset.dataset_version,
+        **_snapshot_provenance(dataset),
         "coverage": dataset.source_coverage_json,
         "report": dataset.report_json,
     }
@@ -627,12 +658,14 @@ async def backtest_dataset_signals(
     settings = get_settings()
     async with session_scope(settings) as session:
         dataset, rows = await _dataset_or_404(dataset_id, session)
-    result = run_backtest(rows, strategy=strategy)
+        result = run_backtest(rows, strategy=strategy)
+        await _assert_dataset_current(session, dataset.id)
     return {
         "status": result.status,
         "model_version": result.model_version,
         "dataset_id": dataset.id,
         "dataset_version": dataset.dataset_version,
+        **_snapshot_provenance(dataset),
         "signals": [signal.as_dict() for signal in result.signals[-limit:]],
         "count": len(result.signals),
     }
@@ -640,45 +673,47 @@ async def backtest_dataset_signals(
 
 @app.get("/api/bsc/market-events")
 async def bsc_market_events(
-    limit: int = Query(50, ge=1, le=200), token: str | None = Query(None)
+    limit: int = Query(50, ge=1, le=200), token: str | None = Query(None),
+    as_of: datetime | None = Query(None),  # noqa: B008
 ) -> dict[str, object]:
     """Return normalized chain events; DexScreener remains enrichment only."""
 
-    settings = get_settings()
-    async with session_scope(settings) as session:
-        query = select(MarketEvent).where(MarketEvent.chain_id == settings.bsc_chain_id)
-        if token:
-            query = query.where(MarketEvent.token_address == token)
-        rows = list(
-            (
-                await session.scalars(query.order_by(MarketEvent.block_number.desc()).limit(limit))
-            ).all()
-        )
-    return {
-        "chain": "bsc",
-        "source": "chain_discovery",
-        "source_priority": ["chain_discovery", "dexscreener_enrichment"],
-        "events": [
-            {
-                "event_type": row.event_type,
-                "token": row.token_address,
-                "pair": row.pair_address,
-                "wallet": row.wallet_address,
-                "tx_hash": row.tx_hash,
-                "block": row.block_number,
-                "timestamp": row.timestamp.isoformat(),
-                "side": row.side,
-                "token_amount": str(row.token_amount) if row.token_amount is not None else None,
-                "quote_amount": str(row.quote_amount) if row.quote_amount is not None else None,
-                "usd_value": str(row.usd_value) if row.usd_value is not None else None,
-                "price": str(row.price) if row.price is not None else None,
-                "source": row.source,
-                "confidence": str(row.confidence) if row.confidence is not None else None,
-                "metadata": row.metadata_json,
-            }
-            for row in rows
-        ],
-    }
+    cutoff = _cutoff(as_of)
+    token = _validated_address(token) if token else None
+
+    def calculate(read):
+        rows, truncated = read.market_events(token=token, limit=limit)
+        return {
+            "chain": "bsc",
+            "as_of": cutoff,
+            "truncated": truncated,
+            "source": "chain_discovery",
+            "source_priority": ["chain_discovery", "dexscreener_enrichment"],
+            "events": [
+                {
+                    "event_type": row.event_type,
+                    "token": row.token_address,
+                    "pair": row.pair_address,
+                    "wallet": row.wallet_address,
+                    "tx_hash": row.tx_hash,
+                    "block": row.block_number,
+                    "timestamp": row.timestamp.isoformat(),
+                    "side": row.side,
+                    "token_amount": str(row.token_amount) if row.token_amount is not None else None,
+                    "quote_amount": str(row.quote_amount) if row.quote_amount is not None else None,
+                    "usd_value": str(row.usd_value) if row.usd_value is not None else None,
+                    "price": str(row.price) if row.price is not None else None,
+                    "source": row.source,
+                    "confidence": str(row.confidence) if row.confidence is not None else None,
+                    "metadata": row.metadata_json,
+                }
+                for row in rows
+            ],
+        }
+
+    return await _canonical_response("bsc", cutoff, {
+        "operation": "bsc_market_events", "token": token, "limit": limit,
+    }, calculate)
 
 
 @app.get("/api/radar/tokens/{token}/early-buyers")
@@ -687,6 +722,7 @@ async def token_early_buyers(
     limit: int = Query(20, ge=1, le=200),
     sort: str = Query("rank"),
     time_window: str | None = Query(None, description="buyers:20, blocks:50, or minutes:5"),
+    as_of: datetime | None = Query(None),  # noqa: B008
 ) -> dict[str, object]:
     """Return deterministic early buyers and their observed positions/PnL."""
     settings = get_settings()
@@ -705,105 +741,36 @@ async def token_early_buyers(
                 detail="time_window 必须是 buyers:N、blocks:N 或 minutes:N",
             )
         window_type, window_value = parts[0], int(parts[1])
+    cutoff = _cutoff(as_of or datetime.now(UTC))
+    if cutoff > datetime.now(UTC):
+        raise HTTPException(400, "as_of cannot be in the future")
     async with session_scope(settings) as session:
-        token_row = await session.scalar(
-            select(Token).where(Token.address == token, Token.chain == "bsc")
-        )
-        pair_row = None
-        if token_row is not None:
-            pair_row = await session.scalar(
-                select(Pair)
-                .where(
-                    Pair.chain_id == settings.bsc_chain_id,
-                    (Pair.token0_address == token or Pair.token1_address == token),
-                    Pair.creation_timestamp.is_not(None),
-                )
-                .order_by(Pair.creation_timestamp.asc(), Pair.id.asc())
-                .limit(1)
-            )
-        if token_row is None or pair_row is None or pair_row.creation_timestamp is None:
-            return {
-                "token": token,
-                "early_buyers": [],
-                "data_status": "UNKNOWN_TOKEN_CREATION",
-                **_freshness_fields(None, None),
-            }
-        query = select(TradeEvent).where(
-            TradeEvent.chain == "bsc", TradeEvent.token_address == token
-        )
-        trade_rows = list(
-            (await session.scalars(query.order_by(TradeEvent.timestamp, TradeEvent.id))).all()
-        )
-        if trade_rows:
-            transactions = [
-                {
-                    "wallet_address": row.trader_address,
-                    "signature": row.tx_hash,
-                    "event_index": row.event_index,
-                    "timestamp": row.timestamp,
-                    "side": row.side.value if hasattr(row.side, "value") else row.side,
-                    "token_address": row.token_address,
-                    "token_amount": row.token_amount,
-                    "usd_value": None,
-                    "price": row.price,
-                    "market_cap": row.market_cap,
-                    "block_number": row.block_number,
-                    "metadata_json": row.metadata_json,
-                }
-                for row in trade_rows
-            ]
-        else:
-            market_query = select(MarketEvent).where(
-                MarketEvent.chain_id == settings.bsc_chain_id, MarketEvent.token_address == token
-            )
-            rows = list(
-                (
-                    await session.scalars(
-                        market_query.order_by(MarketEvent.timestamp, MarketEvent.id)
-                    )
-                ).all()
-            )
-            transactions = [
-                {
-                    "wallet_address": row.wallet_address,
-                    "signature": row.tx_hash,
-                    "event_index": row.event_index,
-                    "timestamp": row.timestamp,
-                    "side": row.side,
-                    "token_address": row.token_address,
-                    "token_amount": row.token_amount,
-                    "usd_value": row.usd_value,
-                    "price": row.price,
-                    "market_cap": row.metadata_json.get("market_cap"),
-                    "block_number": row.block_number,
-                    "metadata_json": row.metadata_json,
-                }
-                for row in rows
-            ]
-    buyers = identify_early_buyers(
-        token,
-        transactions,
-        token_created_at=pair_row.creation_timestamp,
-        token_created_block=pair_row.creation_block,
-        config=EarlyBuyerConfig(
-            top_n=limit,
-            max_entry_hours=settings.early_buyer_max_entry_hours,
-            window_type=window_type,
-            window_value=window_value,
-        ),
+        try:
+            inputs = await session.run_sync(lambda sync: load_replay_inputs(sync, token, as_of=cutoff))
+        except StaleReplayInputs as exc:
+            raise HTTPException(503, "canonical inputs changed; retry the early-buyer read") from exc
+    if inputs.pair is None:
+        return {"token": token, "early_buyers": [], "data_status": "UNKNOWN_TOKEN_CREATION",
+                **_freshness_fields(None, None)}
+    config = EarlyBuyerConfig(
+        top_n=limit, max_entry_hours=settings.early_buyer_max_entry_hours,
+        window_type=window_type, window_value=window_value,
     )
+    buyers = inputs.buyers(config=config)
     if sort == "entry_usd":
         buyers.sort(key=lambda b: b.first_buy_usd or 0, reverse=True)
     elif sort == "pnl":
         buyers.sort(key=lambda b: b.realized_pnl or 0, reverse=True)
     observed_at = max(
-        (_cutoff(row["timestamp"]) for row in transactions),
-        default=_cutoff(pair_row.creation_timestamp),
+        (_cutoff(row["timestamp"]) for row in inputs.transactions),
+        default=datetime.fromisoformat(inputs.pair["creation_timestamp"]),
     )
     return {
         "token": token,
         "window": {"type": window_type, "value": window_value or limit},
-        "data_status": "CHAIN_EVENTS",
+        "data_status": "CHAIN_EVENTS" if buyers else "NO_CANONICAL_EARLY_BUYERS",
+        "replay": {"as_of": cutoff.isoformat(), "source_epoch": inputs.source_epoch,
+                   "digest": inputs.input_manifest(config=config)["digest"]},
         **_freshness_fields(observed_at, observed_at),
         "early_buyers": [
             {
@@ -834,6 +801,41 @@ async def token_early_buyers(
     }
 
 
+async def _canonical_response(chain, cutoff, parameters, calculate):
+    async with session_scope(get_settings()) as session:
+        def run(sync):
+            read = CanonicalResearchRead(sync, chain=chain, as_of=cutoff, parameters=parameters)
+            result = calculate(read)
+            return {**result, "research_provenance": read.finish()}
+
+        try:
+            return await session.run_sync(run)
+        except StaleResearchRead as exc:
+            raise HTTPException(status_code=409, detail={
+                "data_status": "REBUILDING", "reason": str(exc),
+            }) from exc
+
+
+def _graph_parameters(settings):
+    return {
+        "max_total_nodes": settings.graph_max_total_nodes,
+        "max_wallet_nodes": settings.graph_max_wallet_nodes,
+        "max_token_nodes": settings.graph_max_token_nodes,
+        "max_trade_nodes": settings.graph_max_trade_nodes,
+        "max_graph_edges": settings.graph_max_edges,
+        "max_source_events": settings.graph_max_source_events,
+        "max_pair_checks": settings.graph_max_pair_checks,
+    }
+
+
+def _research_graph(read, address, settings):
+    rows, truncated = read.neighborhood(address)
+    trades = [_trade_payload(row) for row in rows]
+    graph = build_wallet_knowledge_graph(trades, chain=read.chain, as_of=read.as_of,
+                                         **_graph_parameters(settings))
+    return trades, truncated, graph
+
+
 @app.get("/api/wallet/{address}/profile")
 async def wallet_profile(
     address: str,
@@ -845,131 +847,38 @@ async def wallet_profile(
     chain = _validated_chain(chain)
     address = _validated_address(address)
     settings = get_settings()
-    async with session_scope(settings) as session:
-        row = await session.scalar(
-            select(WalletSmartMoneySnapshot)
-            .where(
-                WalletSmartMoneySnapshot.chain == chain,
-                WalletSmartMoneySnapshot.wallet_address == address,
-                WalletSmartMoneySnapshot.score_version == score_version,
-                WalletSmartMoneySnapshot.as_of <= _cutoff(as_of),
-            )
-            .order_by(WalletSmartMoneySnapshot.as_of.desc())
-            .limit(1)
-        )
-    if row is None:
-        raise HTTPException(status_code=404, detail="wallet snapshot not found at as_of")
-    # Network influence is derived from the wallet's token neighbourhood, not
-    # just its own wallet-token activity. The profile snapshot itself remains
-    # point-in-time; this graph is independently cut off at the same instant.
-    trades = await _wallet_graph_trade_rows(address, chain, as_of)
-    graph = build_wallet_knowledge_graph(
-        trades,
-        chain=chain,
-        as_of=as_of,
-        max_total_nodes=get_settings().graph_max_total_nodes,
-        max_wallet_nodes=get_settings().graph_max_wallet_nodes,
-        max_token_nodes=get_settings().graph_max_token_nodes,
-        max_trade_nodes=get_settings().graph_max_trade_nodes,
-        max_graph_edges=get_settings().graph_max_edges,
-        max_source_events=get_settings().graph_max_source_events,
-        max_pair_checks=get_settings().graph_max_pair_checks,
-    )
-    network_kinds = {
-        "funded_wallet",
-        "funded_by",
-        "traded_together",
-        "synchronized_entry",
-        "coordinated_exit",
-        "repeated_co_buy",
-        "followed_wallet",
-    }
-    network_edges = sum(
-        1
-        for relationship in graph.relationships_for(address)
-        if relationship.kind in network_kinds
-        and normalize_address(relationship.source, chain="bsc")
-        != normalize_address(relationship.target, chain="bsc")
-    )
-    network_influence = min(Decimal(1), Decimal(network_edges) / Decimal(10))
-    return _wallet_snapshot_payload(row, network_influence=network_influence)
-
-
-async def _wallet_trade_rows(
-    address: str, chain: str, as_of: datetime | None = None
-) -> list[dict[str, object]]:
-    chain = _validated_chain(chain)
-    address = _validated_address(address)
-    settings = get_settings()
     cutoff = _cutoff(as_of)
-    async with session_scope(settings) as session:
-        rows = list(
-            (
-                await session.scalars(
-                    select(TradeEvent)
-                    .where(
-                        TradeEvent.chain == chain,
-                        TradeEvent.trader_address == address,
-                        TradeEvent.timestamp <= cutoff,
-                    )
-                    .order_by(TradeEvent.timestamp, TradeEvent.id)
-                )
-            ).all()
-        )
-    return [_trade_payload(row) for row in rows]
 
+    def calculate(read):
+        snapshots = read.wallet_snapshots([address], score_version)
+        if not snapshots:
+            raise HTTPException(status_code=404, detail="wallet snapshot not found at as_of")
+        row = snapshots[0]
+        _, source_truncated, graph = _research_graph(read, address, settings)
+        network_kinds = {
+            "funded_wallet",
+            "funded_by",
+            "traded_together",
+            "synchronized_entry",
+            "coordinated_exit",
+            "repeated_co_buy",
+            "followed_wallet",
+        }
+        network_edges = sum(
+            1
+            for relationship in graph.relationships_for(address)
+            if relationship.kind in network_kinds
+            and normalize_address(relationship.source, chain="bsc")
+            != normalize_address(relationship.target, chain="bsc")
+        )
+        network_influence = min(Decimal(1), Decimal(network_edges) / Decimal(10))
+        return {**_wallet_snapshot_payload(row, network_influence=network_influence),
+                "network_as_of": cutoff, "network_truncated": graph.truncated or source_truncated}
 
-async def _wallet_graph_trade_rows(
-    address: str,
-    chain: str,
-    as_of: datetime | None = None,
-    *,
-    max_events: int = 20_000,
-    return_truncated: bool = False,
-) -> list[dict[str, object]] | tuple[list[dict[str, object]], bool]:
-    chain = _validated_chain(chain)
-    address = _validated_address(address)
-    settings = get_settings()
-    cutoff = _cutoff(as_of)
-    async with session_scope(settings) as session:
-        own = list(
-            (
-                await session.scalars(
-                    select(TradeEvent)
-                    .where(
-                        TradeEvent.chain == chain,
-                        TradeEvent.trader_address == address,
-                        TradeEvent.timestamp <= cutoff,
-                    )
-                    .order_by(TradeEvent.timestamp, TradeEvent.id)
-                    .limit(max_events + 1)
-                )
-            ).all()
-        )
-        source_truncated = len(own) > max_events
-        own = own[:max_events]
-        tokens = {row.token_address for row in own}
-        if not tokens:
-            result: list[dict[str, object]] = []
-            return (result, source_truncated) if return_truncated else result
-        rows = list(
-            (
-                await session.scalars(
-                    select(TradeEvent)
-                    .where(
-                        TradeEvent.chain == chain,
-                        TradeEvent.token_address.in_(tokens),
-                        TradeEvent.timestamp <= cutoff,
-                    )
-                    .order_by(TradeEvent.timestamp, TradeEvent.id)
-                    .limit(max_events + 1)
-                )
-            ).all()
-        )
-        source_truncated = source_truncated or len(rows) > max_events
-        rows = rows[:max_events]
-    result = [_trade_payload(row) for row in rows]
-    return (result, source_truncated) if return_truncated else result
+    return await _canonical_response(chain, cutoff, {
+        "operation": "wallet_profile", "wallet": address, "score_version": score_version,
+        "graph": _graph_parameters(settings), "max_trades": 20_000,
+    }, calculate)
 
 
 @app.get("/api/wallet/{address}/clusters")
@@ -981,53 +890,47 @@ async def wallet_clusters(
     """Return deterministic clusters and graph edges observed by ``as_of``."""
     chain = _validated_chain(chain)
     address = _validated_address(address)
-    trades, source_truncated = await _wallet_graph_trade_rows(
-        address, chain, as_of, return_truncated=True
-    )
     settings = get_settings()
-    graph = build_wallet_knowledge_graph(
-        trades,
-        chain=chain,
-        as_of=as_of,
-        max_total_nodes=settings.graph_max_total_nodes,
-        max_wallet_nodes=settings.graph_max_wallet_nodes,
-        max_token_nodes=settings.graph_max_token_nodes,
-        max_trade_nodes=settings.graph_max_trade_nodes,
-        max_graph_edges=settings.graph_max_edges,
-        max_source_events=settings.graph_max_source_events,
-        max_pair_checks=settings.graph_max_pair_checks,
-    )
-    clusters = detect_wallet_clusters(graph)
-    selected = [cluster for cluster in clusters if address in cluster.wallets]
-    relationships = graph.relationships_for(address)
-    return {
-        "wallet": address,
-        "chain": chain,
-        "as_of": _cutoff(as_of),
-        "clusters": [
-            {
-                "cluster_id": item.cluster_id,
-                "wallets": list(item.wallets),
-                "evidence": item.evidence,
-                "confidence": item.confidence,
-            }
-            for item in selected
-        ],
-        "relationships": [
-            {
-                "source": item.source,
-                "target": item.target,
-                "kind": item.kind,
-                "weight": item.weight,
-                "evidence": item.evidence,
-            }
-            for item in relationships
-        ],
-        "data_status": "OBSERVED" if trades else "UNKNOWN",
-        "truncated": graph.truncated or source_truncated,
-        "truncation_reasons": list(graph.truncation_reasons)
-        + (["source_event_limit"] if source_truncated else []),
-    }
+    cutoff = _cutoff(as_of)
+
+    def calculate(read):
+        trades, source_truncated, graph = _research_graph(read, address, settings)
+        clusters = detect_wallet_clusters(graph)
+        selected = [cluster for cluster in clusters if address in cluster.wallets]
+        relationships = graph.relationships_for(address)
+        return {
+            "wallet": address,
+            "chain": chain,
+            "as_of": cutoff,
+            "clusters": [
+                {
+                    "cluster_id": item.cluster_id,
+                    "wallets": list(item.wallets),
+                    "evidence": item.evidence,
+                    "confidence": item.confidence,
+                }
+                for item in selected
+            ],
+            "relationships": [
+                {
+                    "source": item.source,
+                    "target": item.target,
+                    "kind": item.kind,
+                    "weight": item.weight,
+                    "evidence": item.evidence,
+                }
+                for item in relationships
+            ],
+            "data_status": "OBSERVED" if trades else "UNKNOWN",
+            "truncated": graph.truncated or source_truncated,
+            "truncation_reasons": list(graph.truncation_reasons)
+            + (["source_event_limit"] if source_truncated else []),
+        }
+
+    return await _canonical_response(chain, cutoff, {
+        "operation": "wallet_clusters", "wallet": address,
+        "graph": _graph_parameters(settings), "max_trades": 20_000,
+    }, calculate)
 
 
 @app.get("/api/wallet/{address}/graph")
@@ -1039,79 +942,78 @@ async def wallet_graph(
     """Return the wallet-centric knowledge graph for UI rendering."""
     chain = _validated_chain(chain)
     address = _validated_address(address)
-    trades, source_truncated = await _wallet_graph_trade_rows(
-        address, chain, as_of, return_truncated=True
-    )
     settings = get_settings()
-    graph = build_wallet_knowledge_graph(
-        trades,
-        chain=chain,
-        as_of=as_of,
-        max_total_nodes=settings.graph_max_total_nodes,
-        max_wallet_nodes=settings.graph_max_wallet_nodes,
-        max_token_nodes=settings.graph_max_token_nodes,
-        max_trade_nodes=settings.graph_max_trade_nodes,
-        max_graph_edges=settings.graph_max_edges,
-        max_source_events=settings.graph_max_source_events,
-        max_pair_checks=settings.graph_max_pair_checks,
-    )
-    graph_clusters = detect_wallet_clusters(graph)
-    node_rows = (
-        [{"id": item.address, "type": "wallet", "chain": item.chain} for item in graph.wallets]
-        + [{"id": item.address, "type": "token", "chain": item.chain} for item in graph.tokens]
-        + [
-            {
-                "id": f"trade:{index}",
-                "type": "trade",
-                "wallet": item.wallet,
-                "token": item.token,
-                "side": item.side,
-                "timestamp": item.timestamp,
-                "value": item.value,
-            }
-            for index, item in enumerate(graph.trades)
-        ]
-        + [
-            {
-                "id": item.cluster_id,
-                "type": "cluster",
-                "wallets": list(item.wallets),
-                "confidence": item.confidence,
-            }
-            for item in graph_clusters[: settings.graph_max_cluster_nodes]
-        ]
-    )
-    node_rows_truncated = len(node_rows) > settings.graph_max_total_nodes
-    if node_rows_truncated:
-        node_rows = node_rows[: settings.graph_max_total_nodes]
-    truncation_reasons = list(graph.truncation_reasons)
-    if source_truncated:
-        truncation_reasons.append("source_event_limit")
-    if node_rows_truncated:
-        truncation_reasons.append("total_node_limit")
-    return {
-        "wallet": address,
-        "chain": chain,
-        "as_of": _cutoff(as_of),
-        "nodes": node_rows,
-        "edges": [
-            {
-                "source": item.source,
-                "target": item.target,
-                "kind": item.kind,
-                "weight": item.weight,
-                "evidence": item.evidence,
-            }
-            for item in graph.relationships[: settings.graph_max_edges]
-        ],
-        "truncated": graph.truncated or source_truncated or node_rows_truncated,
-        "truncation": {
-            **graph.truncation,
-            **({"source_event_limit": 20_000} if source_truncated else {}),
-        },
-        "truncation_reasons": truncation_reasons,
-        "data_status": "OBSERVED" if trades else "UNKNOWN",
-    }
+    cutoff = _cutoff(as_of)
+
+    def calculate(read):
+        trades, source_truncated, graph = _research_graph(read, address, settings)
+        graph_clusters = detect_wallet_clusters(graph)
+        clusters_truncated = len(graph_clusters) > settings.graph_max_cluster_nodes
+        node_rows = (
+            [{"id": item.address, "type": "wallet", "chain": item.chain} for item in graph.wallets]
+            + [{"id": item.address, "type": "token", "chain": item.chain} for item in graph.tokens]
+            + [
+                {
+                    "id": f"trade:{index}",
+                    "type": "trade",
+                    "wallet": item.wallet,
+                    "token": item.token,
+                    "side": item.side,
+                    "timestamp": item.timestamp,
+                    "value": item.value,
+                }
+                for index, item in enumerate(graph.trades)
+            ]
+            + [
+                {
+                    "id": item.cluster_id,
+                    "type": "cluster",
+                    "wallets": list(item.wallets),
+                    "confidence": item.confidence,
+                }
+                for item in graph_clusters[: settings.graph_max_cluster_nodes]
+            ]
+        )
+        node_rows_truncated = len(node_rows) > settings.graph_max_total_nodes
+        if node_rows_truncated:
+            node_rows = node_rows[: settings.graph_max_total_nodes]
+        truncation_reasons = list(graph.truncation_reasons)
+        if source_truncated:
+            truncation_reasons.append("source_event_limit")
+        if node_rows_truncated:
+            truncation_reasons.append("total_node_limit")
+        if clusters_truncated:
+            truncation_reasons.append("cluster_node_limit")
+        return {
+            "wallet": address,
+            "chain": chain,
+            "as_of": cutoff,
+            "nodes": node_rows,
+            "edges": [
+                {
+                    "source": item.source,
+                    "target": item.target,
+                    "kind": item.kind,
+                    "weight": item.weight,
+                    "evidence": item.evidence,
+                }
+                for item in graph.relationships[: settings.graph_max_edges]
+            ],
+            "truncated": graph.truncated or source_truncated or node_rows_truncated or clusters_truncated,
+            "truncation": {
+                **graph.truncation,
+                **({"source_event_limit": 20_000} if source_truncated else {}),
+                "cluster_nodes_dropped": max(0, len(graph_clusters) - settings.graph_max_cluster_nodes),
+            },
+            "truncation_reasons": truncation_reasons,
+            "data_status": "OBSERVED" if trades else "UNKNOWN",
+        }
+
+    return await _canonical_response(chain, cutoff, {
+        "operation": "wallet_graph", "wallet": address,
+        "graph": _graph_parameters(settings), "max_trades": 20_000,
+        "response_selection": {"max_cluster_nodes": settings.graph_max_cluster_nodes},
+    }, calculate)
 
 
 @app.get("/api/token/{address}/smart-money-flow")
@@ -1128,71 +1030,31 @@ async def token_smart_money_flow(
         window_seconds = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "24h": 86400}[window]
     except KeyError as exc:
         raise HTTPException(status_code=400, detail="window 必须是 1m、5m、15m、1h 或 24h") from exc
-    settings = get_settings()
     cutoff = _cutoff(as_of)
     start = cutoff - timedelta(seconds=window_seconds)
-    async with session_scope(settings) as session:
-        rows = list(
-            (
-                await session.scalars(
-                    select(TradeEvent)
-                    .where(
-                        TradeEvent.chain == chain,
-                        TradeEvent.token_address == address,
-                        TradeEvent.timestamp >= start,
-                        TradeEvent.timestamp <= cutoff,
-                    )
-                    .order_by(TradeEvent.timestamp, TradeEvent.id)
-                    .limit(20_001)
-                )
-            ).all()
-        )
-        flow_truncated = len(rows) > 20_000
-        snapshot = aliased(WalletSmartMoneySnapshot)
-        latest_snapshot = (
-            select(func.max(snapshot.as_of))
-            .where(
-                snapshot.chain == WalletSmartMoneySnapshot.chain,
-                snapshot.wallet_address == WalletSmartMoneySnapshot.wallet_address,
-                snapshot.score_version == WalletSmartMoneySnapshot.score_version,
-                snapshot.as_of <= cutoff,
-            )
-            .correlate(WalletSmartMoneySnapshot)
-            .scalar_subquery()
-        )
-        wallets = list(
-            (
-                await session.scalars(
-                    select(WalletSmartMoneySnapshot.wallet_address)
-                    .where(
-                        WalletSmartMoneySnapshot.chain == chain,
-                        WalletSmartMoneySnapshot.score_version == SCORE_VERSION,
-                        WalletSmartMoneySnapshot.as_of == latest_snapshot,
-                        WalletSmartMoneySnapshot.score >= Decimal(60),
-                    )
-                    .distinct()
-                )
-            ).all()
-        )
-    try:
-        result = smart_money_flow(
-            [_trade_payload(row) for row in rows[:20_000]],
-            token=address,
-            smart_wallets=wallets,
-            window=window,
-            as_of=cutoff,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    result["truncated"] = flow_truncated
-    result["max_trades"] = 20_000
-    return result
+
+    def calculate(read):
+        rows, truncated = read.trades(TradeEvent.token_address == address,
+                                      TradeEvent.timestamp >= start, purpose="token_flow")
+        participants = {row.trader_address for row in rows}
+        snapshots = read.wallet_snapshots(participants, SCORE_VERSION)
+        classified = {row.wallet_address for row in snapshots}
+        wallets = [row.wallet_address for row in snapshots if row.score >= Decimal(60)]
+        result = smart_money_flow([_trade_payload(row) for row in rows], token=address,
+                                  smart_wallets=wallets, window=window, as_of=cutoff,
+                                  unclassified_wallets=participants - classified, source_truncated=truncated)
+        result.update({"truncated": truncated, "max_trades": 20_000})
+        return result
+
+    return await _canonical_response(chain, cutoff, {
+        "operation": "token_smart_money_flow", "token": address, "window": window,
+        "score_version": SCORE_VERSION, "min_wallet_score": 60, "max_trades": 20_000,
+    }, calculate)
 
 
 @app.post("/api/wallet/replay")
 async def wallet_replay(payload: dict[str, object]) -> dict[str, object]:
     """Replay successful meme tokens and identify recurring early wallets."""
-    settings = get_settings()
     chain = _validated_chain(str(payload.get("chain", DEFAULT_CHAIN)))
     as_of = payload.get("as_of")
     try:
@@ -1200,7 +1062,7 @@ async def wallet_replay(payload: dict[str, object]) -> dict[str, object]:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="as_of 必须是 ISO-8601 格式") from exc
     token_rows = payload.get("successful_tokens", [])
-    if not isinstance(token_rows, list):
+    if not isinstance(token_rows, list) or any(not isinstance(item, dict) for item in token_rows):
         raise HTTPException(status_code=400, detail="successful_tokens 必须是列表")
     try:
         max_days = min(30, max(1, int(payload.get("max_days", 30))))
@@ -1213,27 +1075,26 @@ async def wallet_replay(payload: dict[str, object]) -> dict[str, object]:
         if isinstance(item, dict)
     ]
     start = cutoff - timedelta(days=max_days)
-    async with session_scope(settings) as session:
-        query = select(TradeEvent).where(
-            TradeEvent.chain == chain,
-            TradeEvent.timestamp >= start,
-            TradeEvent.timestamp <= cutoff,
-        )
-        if token_addresses:
-            query = query.where(TradeEvent.token_address.in_(token_addresses))
-        rows = list(
-            (
-                await session.scalars(
-                    query.order_by(TradeEvent.timestamp, TradeEvent.id).limit(max_trades + 1)
-                )
-            ).all()
-        )
-    truncated = len(rows) > max_trades
-    result = replay_historical_smart_money(
-        token_rows, [_trade_payload(row) for row in rows[:max_trades]], as_of=cutoff
-    )
-    result.update({"truncated": truncated, "max_days": max_days, "max_trades": max_trades})
-    return result
+    graph_parameters = _graph_parameters(get_settings())
+
+    def calculate(read):
+        rows, truncated = read.trades(TradeEvent.timestamp >= start,
+                                      TradeEvent.token_address.in_(token_addresses),
+                                      limit=max_trades, purpose="user_cohort_replay")
+        result = replay_historical_smart_money(token_rows, [_trade_payload(row) for row in rows],
+                                               as_of=cutoff, graph_parameters=graph_parameters)
+        result.update({"truncated": truncated or result["truncated"],
+                       "truncation_reasons": result["truncation_reasons"]
+                       + (["source_event_limit"] if truncated else []),
+                       "max_days": max_days, "max_trades": max_trades,
+                       "cohort_status": "USER_SUPPLIED_UNVERIFIED"})
+        return result
+
+    return await _canonical_response(chain, cutoff, {
+        "operation": "wallet_replay", "successful_tokens": token_rows,
+        "cohort_status": "USER_SUPPLIED_UNVERIFIED", "max_days": max_days, "max_trades": max_trades,
+        "graph": graph_parameters,
+    }, calculate)
 
 
 @app.get("/api/radar/smart-money/wallets")
@@ -1281,16 +1142,13 @@ async def smart_money_wallets(
         else:
             # Profile metrics are materialized JSON fields. Keep cast/order/
             # limit in PostgreSQL so a large wallet table never enters Python.
-            order_column = func.coalesce(
-                func.cast(
+            order_column = func.cast(
                     WalletSmartMoneySnapshot.profile_json[sort].as_string(),
                     Numeric(38, 18),
-                ),
-                Decimal(0),
             )
         query = query.order_by(
-            order_column.desc(), WalletSmartMoneySnapshot.wallet_address.desc()
-        ).limit(limit)
+            order_column.desc().nulls_last(), WalletSmartMoneySnapshot.wallet_address.desc()
+        ).limit(limit).execution_options(populate_existing=True)
         rows = list((await session.scalars(query)).all())
     wallets = [_wallet_snapshot_payload(row) for row in rows]
     return {"chain": chain, "wallets": wallets, "count": len(wallets)}

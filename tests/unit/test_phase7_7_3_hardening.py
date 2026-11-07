@@ -16,6 +16,7 @@ from smms.db.models import Pair, Token, TokenLifecycleEvent, TradeEvent
 def test_launchpad_before_pair_and_no_future_lifecycle_leak():
     with _session() as session:
         session.add(Token(address="flap", chain="bsc", launchpad="flap", first_seen_at=T0))
+        session.add(TokenLifecycleEvent(chain="bsc", token_address="flap", launchpad="flap", event_type="CREATED", timestamp=T0, tx_hash="created"))
         session.commit()
         builder = HistoricalDatasetBuilder(session)
         before, _ = builder.build(T0, T0)
@@ -133,8 +134,9 @@ def test_feature_capability_copies_input_and_dataset_export_splits_prices():
         history.observations[0]["price"] = 999
     with _session() as session:
         session.add(Token(address="launch", chain="bsc", launchpad="flap", first_seen_at=T0))
+        session.add(Pair(chain_id=56, address="launch-pair", token0_address="launch", token1_address="quote", creation_timestamp=T0))
         session.add_all([TradeEvent(chain="bsc", token_address="launch", trader_address="w",
-            tx_hash=f"tx-{i}", side="BUY", source="fixture", price=i+1,
+            tx_hash=f"tx-{i}", side="BUY", source="fixture", price=i+1, price_usd=i+1, pair_address="launch-pair",
             timestamp=T0 + timedelta(seconds=i*30)) for i in range(2)])
         session.commit()
         rows, _ = HistoricalDatasetBuilder(session).build(T0, T0)
