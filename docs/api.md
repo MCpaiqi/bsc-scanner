@@ -69,3 +69,11 @@ while USD fields are `UNKNOWN`.
 错误码仅使用固定分类，不暴露任意心跳内容或错误正文。阶段边界会上报，耗时完成后写入；
 长同步运算期间并非持续刷新，仍需结合心跳年龄判断陈旧状态。这是每实例最近周期的诊断，
 并非跨重启累计历史或硬性延迟 SLO。
+
+`workers.research_rebuild.research` 返回重建 worker 的同类诊断。阶段为 `REBUILD`、
+`COMMIT`、`IDLE`，耗时字段为 `repair_seconds`、`publication_lock_seconds`（根快照身份锁探测）、
+`rebuild_seconds`、`commit_seconds` 和总 `seconds`。提交后才提供 `jobs_examined`、
+`jobs_completed`、`jobs_deferred`、`jobs_unsupported`、`jobs_stale`、`jobs_superseded`；
+延后任务仍需重试，不代表已重建成功。后台心跳在异步等待中更新耗时，终态上报前停止。
+单次数据库锁等待最多250ms，尊重原配置中更短的期限；这不是整条 SQL、CPU 或整批任务的
+运行时限。取消会传播并回滚未提交工作；跨会话健康读取只暴露对应 worker 的白名单字段。

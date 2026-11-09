@@ -56,6 +56,32 @@ RPC. It repairs bounded cyclic cursor pages and evaluates at most 16 due jobs by
 default. Retries, out-of-order IDs, restarts and additional epoch changes retain
 work. A separate heartbeat task reports progress while reconstruction waits.
 
+Repair ownership is nonblocking and schema/kind scoped, including first startup;
+a locked cursor does not prevent already-durable independent jobs from being
+claimed. Each job probes its root publication identity before loading facts, then
+rolls back that inner SAVEPOINT to release the probe lock. Final publication
+reacquires the identity and checks the latest winner, so a live publication can
+progress during reconstruction reads and its fresh policy remains authoritative.
+PostgreSQL lock waits inside that job's SAVEPOINT are capped at250ms, preserving
+an existing shorter nonzero lock_timeout. Success restores the caller setting;
+SAVEPOINT rollback restores it after a timeout/error. A failed job remains PENDING
+with a60s retry delay while other due jobs may commit. This covers dependency/write
+lock waits too, without changing the live publication protocol or truncating facts.
+
+The heartbeat exposes REBUILD/COMMIT/IDLE, repair/root-publication-lock/rebuild/commit
+seconds and the committed job status counts through workers.research_rebuild.research
+in /health. publication_lock_seconds measures the root identity probe, not all
+dependency locks. Pulses update elapsed time during async waits and stop before a
+terminal report. Counts remain null until the source transaction actually commits;
+cancellation before commit releases claimed jobs/publication locks and leaves work
+retryable. Heartbeat failure does not undo a successful reconstruction commit.
+An unsupported recipe and a genuine unavailable result remain distinct statuses.
+
+The250ms bound applies per database lock wait, not to whole queries, CPU work or
+the total batch. Dense synchronous computation can delay pulses. Full source/
+anchor retention, dense manifest storage, selective invalidation, canonical-fence
+publication latency and measured asynchronous throughput remain open R11 work.
+
 Read-only endpoints:
 
 - `GET /api/research/snapshots/{table}/{id}`: full lineage/history with persisted

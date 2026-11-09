@@ -537,12 +537,12 @@ async def run_event_relay() -> None:
         await asyncio.sleep(1)
 
 
-async def _report_research_cycle(status, report):
+async def _report_research_cycle(status, report, *, worker_type="forward-worker"):
     details = {"research_cycle": dict(report)}
     if report["committed"]:
         details["last_committed_research_cycle"] = dict(report)
     try:
-        await asyncio.wait_for(heartbeat("forward-worker", status, details=details), timeout=2)
+        await asyncio.wait_for(heartbeat(worker_type, status, details=details), timeout=2)
     except (SQLAlchemyError, PostgresError, OSError, TimeoutError, ValueError, RuntimeError) as exc:
         logging.getLogger(__name__).warning("research heartbeat unavailable reason=%s", type(exc).__name__)
 
@@ -676,36 +676,65 @@ async def run_alpha_coverage() -> None:
         await asyncio.sleep(1)
 
 
-async def run_research_rebuild() -> None:
+async def run_rebuild_cycle(settings, *, at=None):
+    from smms.evaluation import utc
     from smms.research.rebuild import rebuild_due
 
-    settings = get_settings()
-    progress = {"status": "RUNNING", "jobs_examined": 0}
-
+    started = perf_counter()
+    counts = ("jobs_examined", "jobs_completed", "jobs_deferred", "jobs_unsupported", "jobs_stale", "jobs_superseded")
+    durations = ("repair_seconds", "publication_lock_seconds", "rebuild_seconds")
+    report = {"phase": "REBUILD", "committed": False, "started_at": datetime.now(UTC).isoformat(),
+              "finished_at": None, "evaluation_as_of": utc(at or datetime.now(UTC)).isoformat(),
+              "seconds": 0.0, "commit_seconds": None, "error_code": None,
+              **dict.fromkeys((*counts, *durations))}
+    async def emit(status):
+        report["seconds"] = max(0.0, perf_counter() - started)
+        await _report_research_cycle(status, report, worker_type="research-rebuild")
     async def pulse():
         while True:
-            try:
-                await heartbeat("research-rebuild", progress["status"],
-                                details={"jobs_examined": progress["jobs_examined"]})
-            except (SQLAlchemyError, OSError):
-                pass
             await asyncio.sleep(min(30, settings.runtime_heartbeat_interval_seconds))
-
-    task = asyncio.create_task(pulse())
+            await emit("RUNNING")
     try:
-        while True:
-            try:
-                async with session_scope(settings) as session:
-                    count = await session.run_sync(lambda sync: rebuild_due(sync, now=datetime.now(UTC)))
-                    await session.commit()
-                progress.update(status="RUNNING", jobs_examined=count)
-            except (SQLAlchemyError, OSError, ValueError) as exc:
-                progress["status"] = "DEGRADED"
-                logging.getLogger(__name__).warning("research rebuild retry reason=%s", type(exc).__name__)
-            await asyncio.sleep(5)
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        await emit("RUNNING")
+        task = asyncio.create_task(pulse())
+        try:
+            measured = {}
+            async with session_scope(settings) as session:
+                await session.run_sync(lambda sync: rebuild_due(sync, now=datetime.fromisoformat(report["evaluation_as_of"]),
+                                                               report=measured))
+                report.update(phase="COMMIT", **{key: measured.get(key) for key in durations})
+                await emit("RUNNING")
+                committing = perf_counter()
+                await session.commit()
+                # Record the actual commit before any subsequent cancellation point.
+                report.update(committed=True, commit_seconds=perf_counter() - committing,
+                              **{key: measured.get(key) for key in counts})
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        report.update(phase="IDLE", finished_at=datetime.now(UTC).isoformat())
+        await emit("RUNNING")
+    except asyncio.CancelledError:
+        report.update(error_code="CANCELLED", finished_at=datetime.now(UTC).isoformat())
+        await emit("STOPPED")
+        raise
+    except (SQLAlchemyError, PostgresError, OSError, ValueError) as exc:
+        report.update(error_code="DB_ERROR" if isinstance(exc, (SQLAlchemyError, PostgresError)) else
+                      "IO_ERROR" if isinstance(exc, OSError) else "INVALID_INPUT", finished_at=datetime.now(UTC).isoformat())
+        await emit("DEGRADED")
+        logging.getLogger(__name__).warning("research rebuild retry phase=%s reason=%s", report["phase"], type(exc).__name__)
+    except Exception:
+        report.update(error_code="INTERNAL_ERROR", finished_at=datetime.now(UTC).isoformat())
+        await emit("DEGRADED")
+        raise
+    return report
+
+
+async def run_research_rebuild() -> None:
+    settings = get_settings()
+    while True:
+        await run_rebuild_cycle(settings)
+        await asyncio.sleep(5)
 
 
 def main() -> None:

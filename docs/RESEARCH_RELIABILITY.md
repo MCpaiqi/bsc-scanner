@@ -912,3 +912,62 @@ separate gate; schema creation inside regressions does not prove migration parit
   remains outside Git. No provider call, production write, merge or deployment
   occurred. R3 and R11–R14 remain OPEN; the original programme continues, with
   scoped verified commits pushed to origin/codex/research-integrity as authorized.
+
+
+## Independent reconstruction and durable health (2026-11-09)
+
+- R11 reconstruction previously claimed jobs with skip-locked SQL only after
+  blocking on all repair cursors. Warm and cold PostgreSQL reproductions failed
+  on the cursor/initial-insert wait. Repair now uses schema/kind-scoped nonblocking
+  ownership and skip-locked cursor reads, retaining cyclic wrap for late commits.
+  A busy repair owner no longer prevents independent durable jobs from completing.
+- Each reconstruction job uses a SAVEPOINT and a temporary PostgreSQL lock_timeout
+  capped at250ms, preserving a shorter existing nonzero setting. Success restores
+  the exact caller setting; rollback restores it after a failed statement. A busy
+  job stays PENDING with a60s retry and fixed exception-category last_error, while
+  independent jobs can commit. Real dependency contention verifies SQLSTATE55P03
+  (lock timeout), rather than a whole-statement timeout. This is a per-lock bound,
+  not a query/CPU/whole-batch SLO or permission to truncate facts.
+- A root publication identity probe detects existing contention before loading
+  facts, then rolls back its inner SAVEPOINT to release the temporary lock. Actual
+  publication reacquires the identity and checks the latest winner. This matters:
+  the first implementation held the root through calculation. An independent live
+  publisher reproduced an Important regression RED; the released-probe fix passes
+  GREEN and requires the fresh live policy/value to win over the older rebuild.
+  The live producer publication protocol is unchanged.
+- rebuild_due retains its integer return and can report repair/root-probe/rebuild
+  seconds and examined/completed/deferred/unsupported/stale/superseded job counts.
+  The worker adds COMMIT/IDLE stages and persists counts only after actual commit.
+  /health exposes a separate whitelisted research_rebuild profile from committed
+  heartbeats. Pulses update elapsed time during async waits and are joined before
+  terminal reports. No arbitrary heartbeat fields or exception text are exposed.
+- Real PostgreSQL cancellation interrupts a recipe while its publication/job/cursor
+  locks are held, rolls back attempt changes, reports STOPPED without committed
+  counters and allows a new cycle to finish the same jobs. Separate API/session
+  readers observe the persisted result/timing. Failed heartbeat writes do not undo
+  a successful source commit. Existing forward-worker health remains compatible.
+- One fresh read-only reviewer reported no Critical/Important/Minor findings. The
+  parent independently identified and fixed the root-lock hold regression above
+  during the same final fix pass; no second review or deferred minors. The plan
+  records every considered scope ruling, including cooperative-worker ownership,
+  old-version/DDL rollout limits, idle-sleep shutdown reporting, per-instance recent
+  telemetry and the broader acceptance requirements that remain OPEN.
+- Synthetic SQLite reconstruction retains2000/10000 canonical input rows, excludes
+  the orphan, includes its replacement, preserves the old manifest digest and keeps
+  missing USD fields null. Five no-op cycles create no extra revision (history stays2).
+  Final local rebuild+commit took0.539/1.900s; these are synthetic observations, not
+  production throughput or storage-growth guarantees. The first benchmark fixture
+  omitted a required trader address; correcting that fixture changed no product code.
+- Final backend **831 passed, 55 skipped, 13 existing warnings** after the probe
+  fix. Final real PostgreSQL16 selection **86 passed**, including warm/cold repair,
+  root/dependency contention, live publication during rebuild reads, source commit/
+  rollback/cancellation, durable health, late commits and existing derived/Forward
+  reconstruction. Full Ruff and whitespace checks passed. A single old derived
+  API test assertion now converts non-UTC instants with utc() instead of relabelling
+  tzinfo; no product timestamp semantics were changed. Frontend source is unchanged.
+- Confirmed zero owned verification schemas and other database clients, stopped
+  the owned foreground PostgreSQL instance and observed its terminal exit. Evidence
+  stays outside Git. No provider call, production write, deployment or merge was
+  performed. This verified batch advances R11; canonical anchors/provenance,
+  selective invalidation, dense storage and whole-path throughput/latency still
+  require closure. R3 and R11–R14 remain OPEN under the complete original objective.

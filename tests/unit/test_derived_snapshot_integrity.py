@@ -10,6 +10,7 @@ from test_alpha_collector import coverage_session as _coverage_session
 from test_research_integrity import research_session as _research_session
 
 from smms.db.models import Pair, Token, TokenRiskSnapshot, TokenSmartMoneySnapshot, TradeEvent
+from smms.evaluation import utc
 from smms.risk.aggregation import RiskAggregationService
 from smms.smart_money.aggregation import IntelligenceAggregationService
 
@@ -195,7 +196,7 @@ def test_canonical_invalidation_hides_stale_snapshot_and_alias_latest(research_s
         {TOKEN}, chain="bsc", score_version="v2", as_of=T0 + timedelta(seconds=50),
     )
     assert len(rows) == 1 and rows[0].id != old.id
-    assert rows[0].as_of.replace(tzinfo=UTC) == T0 + timedelta(seconds=20)
+    assert utc(rows[0].as_of) == T0 + timedelta(seconds=20)
 
 
 def test_stale_publication_cannot_acquire_a_new_epoch(research_session):

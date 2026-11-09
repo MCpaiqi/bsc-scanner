@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta
 from decimal import Decimal
+from time import perf_counter
 from types import SimpleNamespace
 
 from sqlalchemy import or_, select
@@ -25,17 +26,25 @@ from smms.db.models import (
 )
 from smms.evaluation import utc
 
-from .lineage import digest, manifest
-from .publication import IDENTITY, MODELS, publish_snapshot
+from .lineage import manifest
+from .maintenance import bounded_lock_wait, try_repair_ownership
+from .publication import IDENTITY, MODELS, lock_identity, publish_snapshot
 from .state import capture_epoch, insert_once
 
 
 def _repair(session, *, epoch, now, batch_size):
     for kind, model in MODELS.items():
-        insert_once(session, ResearchRebuildCursor, {"kind": kind, "last_id": 0}, ["kind"])
-        cursor = session.scalar(select(ResearchRebuildCursor).where(
-            ResearchRebuildCursor.kind == kind,
-        ).with_for_update())
+        if not try_repair_ownership(session, "research-repair", kind):
+            continue
+        query = select(ResearchRebuildCursor).where(ResearchRebuildCursor.kind == kind).with_for_update(skip_locked=True)
+        cursor = session.scalar(query.execution_options(populate_existing=True))
+        if cursor is None:
+            if session.scalar(select(ResearchRebuildCursor.kind).where(ResearchRebuildCursor.kind == kind)) is not None:
+                continue
+            insert_once(session, ResearchRebuildCursor, {"kind": kind, "last_id": 0}, ["kind"])
+            cursor = session.scalar(query.execution_options(populate_existing=True))
+            if cursor is None:
+                continue
         rows = session.scalars(select(model).where(
             model.chain == "bsc", model.id > cursor.last_id,
             model.source_epoch >= 0,
@@ -183,12 +192,16 @@ def _rebuild(session, old):
     return None
 
 
-def rebuild_due(session, *, now: datetime, batch_size: int = 16) -> int:
+def rebuild_due(session, *, now: datetime, batch_size: int = 16, report=None) -> int:
     if not 1 <= batch_size <= 256:
         raise ValueError("batch_size must be between 1 and 256")
     now = utc(now)
+    started = perf_counter()
+    publication_seconds = 0.0
     epoch = capture_epoch(session)
     _repair(session, epoch=epoch, now=now, batch_size=batch_size)
+    repair_seconds = perf_counter() - started
+    started = perf_counter()
     jobs = session.scalars(select(ResearchRebuildJob).where(
         ResearchRebuildJob.status == "PENDING", ResearchRebuildJob.next_attempt_at <= now,
     ).order_by(ResearchRebuildJob.next_attempt_at, ResearchRebuildJob.id).limit(batch_size)
@@ -205,8 +218,17 @@ def rebuild_due(session, *, now: datetime, batch_size: int = 16) -> int:
             continue
         job.attempts += 1
         try:
-            with session.begin_nested():
-                root = digest({"kind": old.__tablename__, **{name: getattr(old, name) for name in IDENTITY[model]}})
+            with session.begin_nested(), bounded_lock_wait(session):
+                locking = perf_counter()
+                try:
+                    with session.begin_nested() as probe:
+                        root = lock_identity(session, model, {name: getattr(old, name) for name in IDENTITY[model]})
+                        # Detect an already-busy root before reading facts, but
+                        # do not retain its lock across expensive reconstruction.
+                        # Final publication reacquires it and checks the winner.
+                        probe.rollback()
+                finally:
+                    publication_seconds += perf_counter() - locking
                 session.info["research_rebuild_root"] = root
                 try:
                     unsupported = _rebuild(session, old)
@@ -228,4 +250,11 @@ def rebuild_due(session, *, now: datetime, batch_size: int = 16) -> int:
             job.status, job.last_error = "PENDING", type(exc).__name__
             job.next_attempt_at = now + timedelta(seconds=60)
     session.flush()
+    if report is not None:
+        report.update(repair_seconds=repair_seconds, publication_lock_seconds=publication_seconds,
+                      rebuild_seconds=perf_counter() - started, jobs_examined=len(jobs),
+                      **{key: sum(job.status == status for job in jobs) for key, status in (
+                          ("jobs_completed", "COMPLETE"), ("jobs_deferred", "PENDING"),
+                          ("jobs_unsupported", "UNSUPPORTED"), ("jobs_stale", "STALE_EPOCH"),
+                          ("jobs_superseded", "SUPERSEDED"))})
     return len(jobs)
