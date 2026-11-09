@@ -24,8 +24,8 @@
 
 - [x] Task1: RED lock drift/CLI checks; implement manifest/check/update and generate initial compatible hash locks in an isolated temporary source export. Pin npm specs to existing lock and verify npm ci.
 - [x] Task2: RED demonstrated release-source omissions/inclusions and runner resolving behavior; fix actual artifact/verification entry points, Docker locked/config source inputs and pinned bases. Preserve existing user files.
-- [ ] Task3: add pinned least-privilege CI workflow and documented commands; run clean Windows/Linux installs, full backend with real PostgreSQL/Redis and frontend build/tests, plus wheel/source checks. Resolve actual platform/clean-install failures.
-- [ ] Task4: one fresh read-only review and one Critical/Important RED→GREEN fix pass; scoped commit/push, inspect the exact SHA's remote CI through completion, fix failures with verified commits, update ledger and clean only owned processes/scratch. Do not certify R12 merely from local tests or a workflow file.
+- [x] Task3: add pinned least-privilege CI workflow and documented commands; run clean Windows/Linux installs, full backend with real PostgreSQL/Redis and frontend build/tests, plus wheel/source checks. Resolve actual platform/clean-install failures.
+- [x] Task4: one fresh read-only review and one Critical/Important RED→GREEN fix pass; scoped commit/push, inspect the exact SHA's remote CI through completion, fix failures with verified commits, update ledger and clean only owned processes/scratch. Do not certify R12 merely from local tests or a workflow file.
 
 ## Review focus/rulings
 
@@ -46,3 +46,13 @@ Primary reference checked for universal/hash compilation: https://docs.astral.sh
 - Deferred Minor: BSC_RPC_ENDPOINTS/BSC_WS_ENDPOINTS are unused aliases in the workflow. Hosted CI has no provider configuration/secrets and tests use fixtures; replace with actual URL(S) setting names in subsequent workflow hardening. No Critical/Important finding remains without regression evidence; final full suites/exact-SHA CI still pending.
 
 - Corrected full-run results before the final old-fixture adaptation: Windows874passed64skipped1failed14warnings; Linux937passed1skipped1failed15warnings. Sole failure was the preexisting release fixture's fake .git directory. It now initializes real Git and stages only explicit dummy inputs, preserving sensitive/generated-path assertions without weakening fail-closed behavior. The updated Windows packaging/lock/runner selection27passed; final full suite/remote CI still required.
+
+## Final authoritative evidence
+
+Code b1b171dd30cc8480ad6bae57d3f1a07894972e4d pushed; remote branch matched.
+Local final Windows875passed64skipped14warnings; full real PostgreSQL/Redis Linux938passed1Windows-only skipped15warnings; both shared runners exit0 including cleanup/Ruff. Clean frontend76tests/build passed on Windows/Linux; source390hashes and independent runtime wheel47migration/static resources verified.
+GitHub https://github.com/MCpaiqi/bsc-scanner/actions/runs/42601331251 completed success, all6jobs: Ubuntu3.12/3.13 each874passed65skipped; Windows3.13 875passed64skipped; PostgreSQL/Redis938passed1Windows-only skipped; frontend, source/wheel, both pinned images, installed resources and API/web HTTP smoke success. Artifacts named with b1b171d full SHA. No image publication/deployment.
+One Important final-review fix and executor-discovered cleanup/fixture/time-assertion corrections are covered by RED→GREEN and green full suites. Deferred Minor remains ineffective workflow provider-disabling alias names; clean CI has no provider config/credentials. Full programme R3/R11/R13/R14 remains open.
+Owned services: zero test schemas/other PG+Redis clients before stop; foreground PostgreSQL/Redis both exited0; owned public schema retains migration0046 as evidence.
+Final: Ruling: a separate evidence-only documentation commit uses [skip ci] after lock/whitespace/source-build/audit checks — it records the successful exact code SHA instead of rerunning the same10-minute service suite for prose alone — documentation HEAD is not claimed to have executed CI; behavioral code/config/lock changes still require the complete workflow.
+Branch integration: user already authorized verified pushes. Keep codex/research-integrity and workspace for the continuing full programme; no merge/PR/deployment or worktree removal is authorized/needed.

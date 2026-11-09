@@ -30,7 +30,7 @@ explicit UNKNOWN states. Preserve existing local data and untracked source.
   batches; VWAP processing avoids quadratic rescans; runtime latency is observable.
   Canonical anchors/provenance and dense/UNKNOWN history remain retained; publication
   lock latency and asynchronous reconstruction throughput still require closure.
-- [ ] R12: clean-checkout backend/frontend checks and PostgreSQL migrations run in
+- [x] R12: clean-checkout backend/frontend checks and PostgreSQL migrations run in
   CI; release dependencies/configuration are reproducible; critical paths have
   restart/reorg/rollback/coverage interruption tests.
 - [ ] R13: deployment restricts database/Redis exposure and protects analyst writes;
@@ -1048,40 +1048,55 @@ separate gate; schema creation inside regressions does not prove migration parit
   selective invalidation and whole-path throughput/latency still require closure.
 
 
-## Reproducible checks and delivery (2026-11-09, verification in progress)
+## Reproducible checks and delivery (2026-11-09)
 
-- Runtime/dev dependency locks pin existing tested Python versions, conditional
-  platform dependencies and build tools with hashes. The stdlib checker detects
-  stale declarations, altered lock bytes and npm direct-version drift while
-  accepting Git line-ending conversion. Explicit generation uses pinned uv0.12.5
-  and a temporary derived build input; no project uv.lock/.venv is modified.
-- Verification no longer installs or resolves dependencies. Clean Windows3.13 /
-  Linux3.12 installations and pip check passed. Exact npm specs preserve the prior
-  resolved graph. Node24.15.0/npm11.12.1 is required by the observed jsdom engine
-  boundary; clean frontend76tests and production build passed on both platforms.
-- Source packaging uses tracked inputs in a checkout, refuses failed/mismatched
-  Git discovery, preserves existing outputs, verifies per-file hashes and fixes
-  ZIP entry ordering/timestamps. Exported sources outside a checkout remain
-  supported without Git. Wheel checks verified47migration Python files and legacy
-  static resources; an independent Linux runtime-lock-only wheel install and CLI
-  check passed. Docker copies required configs and frontend dist and installs
-  locked dependencies before first-party code without dependency resolution.
-- New CI includes Ubuntu3.12/3.13, Windows3.13, actual PostgreSQL16/Redis7, frontend,
-  source/wheel and digest-pinned runtime/web image builds and HTTP smoke. Actions
-  are pinned; permissions contents:read; no checkout credential persistence,
-  deployment or image publication. Actual exact-SHA CI remains required.
-- Full local verification exposed Windows readonly Git fixture cleanup and four
-  old non-UTC test assertions. Cleanup has a narrow readonly-file retry; assertions
-  now convert instants with utc(), without changing product timestamp semantics.
-  PostgreSQL targeted70tests passed/1Windows-only skip; the next full runs passed874Windows /937Linux cases but each rejected one
-  old release fixture with fake .git metadata. That fixture now uses real Git and
-  explicit dummy tracked inputs;27Windows packaging/lock/runner tests passed. Final
-  full corrected suites and exact-SHA CI are still pending. A fresh read-only review found one Important Git fallback defect,
-  now RED→GREEN, and one deferred Minor unused provider-disabling environment alias.
-  Full rulings and boundaries are in the implementation plan and
-  [reproduction guide](REPRODUCIBLE_CHECKS.md).
-- R12 remains OPEN until final local checks and the actual pushed SHA's complete
-  CI succeed. R3/R11/R13/R14 are still OPEN. Docker daemon is unavailable locally;
-  no container/full-topology/provider or production assurance follows from YAML
-  inspection alone. Existing untracked data, reports, releases and environments
-  remain untouched and outside the scoped commit.
+- Runtime/dev locks pin the existing tested Python graph, conditional platform
+  dependencies and build tools with hashes. The stdlib checker detects stale
+  declarations, altered lock bytes and npm direct-version drift while accepting
+  CRLF/LF conversion. Explicit generation uses uv0.12.5 and a temporary build input
+  derived from build-system.requires. Existing project uv.lock/.venv are untouched.
+- Verification no longer installs/resolves dependencies. Clean Windows3.13 /
+  Linux3.12 locked installs and pip check passed. Exact npm specs preserve the prior
+  resolved graph. Node24.15.0/npm11.12.1 satisfies the observed jsdom engine boundary;
+  clean frontend76tests and production build passed on both platforms.
+- Source packaging uses tracked checkout inputs, refuses failed/mismatched Git
+  discovery, preserves existing outputs, verifies each file hash and normalizes
+  ZIP entry ordering/timestamps. Genuine exports outside a checkout work without
+  Git. Wheel checks verified47migration Python files and legacy static resources;
+  an independent Linux runtime-lock-only wheel install and CLI check passed.
+  Docker copies configs/frontend dist and installs locked tools before first-party
+  code without dependency resolution/build isolation. See
+  [reproduction commands](REPRODUCIBLE_CHECKS.md).
+- Final local Windows full runner: **875passed,64skipped,14warnings**, exit0 including
+  cleanup and Ruff. Final Linux full runner with real PostgreSQL16/Redis7 and
+  Asia/Hong_Kong database timezone: **938passed,1Windows-only skipped,15warnings**,
+  exit0 including Ruff. Earlier failures exposed readonly Git fixture cleanup,
+  four old time assertions that relabelled+08:00 as UTC, and one old fixture with
+  fake .git metadata. Narrow readonly cleanup, correct utc() assertions and a real
+  Git fixture resolved them. No product timestamp/scoring/schema behavior changed.
+- Exact code commit **b1b171dd30cc8480ad6bae57d3f1a07894972e4d** passed all six jobs in
+  [GitHub run42601331251](https://github.com/MCpaiqi/bsc-scanner/actions/runs/42601331251).
+  Ubuntu3.12 and3.13 each passed874/65skipped; Windows3.13 passed875/64skipped;
+  real PostgreSQL/Redis passed938/1Windows-only skipped. Frontend, source/wheel,
+  digest-pinned runtime/web builds, installed-resource checks and HTTP smoke passed.
+  source-and-wheel and frontend artifacts are named with that exact SHA.
+- Actions are pinned; permissions contents:read; checkout credentials are not
+  persisted. No deployment or image publication occurs. Local Docker daemon is
+  unavailable; container evidence above comes from the actual remote run, not YAML
+  inspection. This certifies scoped R12, including existing restart/reorg/rollback/
+  coverage-interruption regression paths; it does not certify full Compose restart.
+- One fresh read-only review:0Critical,1Important Git fallback defect fixed by two
+  RED→GREEN cases,1Minor deferred unused provider-disabling environment aliases.
+  Clean hosted runners have no provider credentials/configuration; the declarations
+  should use actual URL(S) aliases in subsequent workflow hardening. Plan records
+  all rulings: derived build input, supported Node patch, owned pytest temp outside
+  checkout, executor/CI evidence duties, and no signature/universal byte-identity
+  claim. No second review was dispatched.
+- Verified zero owned test schemas and other PostgreSQL/Redis clients, then stopped
+  both owned foreground services and observed exit0. The owned public migration
+  head0046 remains as fresh-migration evidence. User data/reports/releases/environments
+  were not cleaned or committed. R3/R11/R13/R14 remain OPEN under the full objective.
+- A separate evidence-only documentation commit records this result. It uses
+  [skip ci] after local lock/whitespace/source-build/audit checks; the successful
+  remote execution claim refers specifically to the code SHA above. No claim is
+  made that the documentation commit itself executed another CI run.
