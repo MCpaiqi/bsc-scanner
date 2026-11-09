@@ -33,8 +33,9 @@ explicit UNKNOWN states. Preserve existing local data and untracked source.
 - [x] R12: clean-checkout backend/frontend checks and PostgreSQL migrations run in
   CI; release dependencies/configuration are reproducible; critical paths have
   restart/reorg/rollback/coverage interruption tests.
-- [ ] R13: deployment restricts database/Redis exposure and protects analyst writes;
-  documentation matches actual services; credentials are never published.
+- [x] R13: deployment restricts database/Redis exposure and protects analyst writes;
+  condition operands are validated and incompatible legacy rules cannot stop
+  other rules; documentation matches actual services; credentials are never published.
 - [ ] R14: the full Compose topology passes an isolated persistence/restart and
   end-to-end smoke test; remaining live-provider limitations are explicit.
 
@@ -1102,7 +1103,7 @@ separate gate; schema creation inside regressions does not prove migration parit
   made that the documentation commit itself executed another CI run.
 
 
-## Private deployment and analyst authorization (2026-11-10, CI pending)
+## Private deployment and analyst authorization (2026-11-10)
 
 - Compose API/Web bind127.0.0.1; PostgreSQL/Redis have no host-published ports.
   Database credentials are explicitly required; new stdlib bootstrap generates
@@ -1148,5 +1149,32 @@ separate gate; schema creation inside regressions does not prove migration parit
   launch was corrected; that launch is excluded from authoritative pass claims.
 - CI uses the actual BSC URL(S) settings, installs its built first-party wheel,
   requires rendered Compose boundaries and authenticated API through the web
-  image using an ephemeral unprinted key. Exact pushed-SHA execution is still
-  pending. R13 is not certified yet; R3/R11/R14 remain OPEN under the full goal.
+  image using an ephemeral unprinted key. Exact pushed-SHA execution is
+  recorded in terminal verification below; R3/R11/R14 remain OPEN under the full goal.
+
+### R13 terminal verification
+
+- Code **890ea40f168cc7887a18a6b601a0ad32b45dba99** was pushed and passed all6jobs in
+  [GitHub run42653014988](https://github.com/MCpaiqi/bsc-scanner/actions/runs/42653014988).
+  Ubuntu3.12, Ubuntu3.13 and Windows3.13 each passed **944tests/65skipped** with Ruff;
+  real PostgreSQL16/Redis7 passed **1008tests/1Windows-only skip/15existing warnings**.
+  Frontend87tests/build, source/wheel, both pinned images, installed resources,
+  mandatory actual Compose rendering and authenticated web/API smoke all passed.
+  SHA-named source-and-wheel/frontend artifacts were uploaded; no image publication
+  or deployment occurred. R13, including its originally recorded operand-validation
+  requirement, is certified at this scope. The prior workflow alias Minor is fixed.
+- Verified zero owned schemas/other PostgreSQL and Redis clients, stopped both owned
+  foreground services with exit0 and retained the owned public head0046 evidence.
+  The synthetic browser API was explicitly terminated after completed writes/reload;
+  an independent query confirmed saved note/rule persistence and excluded its unsaved
+  draft. Existing user.env, environments, data and volumes were not modified.
+- One new Minor remains deferred: older401 UI recovery may cancel concurrent new
+  unlock, requiring key re-entry, without losing drafts or granting unauthorized
+  access. Shared-key rotation revokes server access; local lock only forgets the
+  browser credential and does not cancel already accepted server work. Multi-user,
+  signing/public-Internet isolation, full topology/provider/production rotation,
+  manual evaluation provenance and performance retain their explicit scope limits.
+- Evidence-only documentation follow-up uses [skip ci] after local lock/whitespace/
+  source-build/audit checks; the full successful CI claim applies to code890ea40,
+  not a claimed second execution for the documentation HEAD. Original R3/R11/R14
+  requirements remain active and unchanged.
