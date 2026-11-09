@@ -21,6 +21,8 @@ from sqlalchemy.orm import Session
 
 from smms.db.models import Pair, Token, TradeEvent
 
+from .vwap import WindowPoint, best_window_vwap, window_vwap
+
 OBSERVATION_WINDOWS = ("30s", "1m", "5m")
 WINDOWS = {"30s": timedelta(seconds=30), "1m": timedelta(minutes=1), "5m": timedelta(minutes=5)}
 HORIZONS = {
@@ -32,7 +34,7 @@ HORIZONS = {
     "7d": timedelta(days=7),
 }
 FEATURE_VERSION = "alpha-features-v1"
-LABEL_VERSION = "alpha-labels-v1"
+LABEL_VERSION = "alpha-labels-v2"
 UNKNOWN = None
 LABEL_POSITIVE = "POSITIVE_CONFIRMED"
 LABEL_NEGATIVE = "NEGATIVE_CONFIRMED"
@@ -69,70 +71,35 @@ def swap_amounts_for_basis(
     return None
 
 
-def rolling_vwap(
-    events: Iterable[TradeEvent],
-    *,
-    start: datetime,
-    end: datetime,
-    min_quote_notional: Decimal,
-    pair: Pair | None = None,
-    price_basis: str = PRICE_BASIS_HUMAN,
-) -> Decimal | None:
-    """VWAP in a single explicit basis, gated by HUMAN quote notional.
-
-    Raw units cannot be compared to a human quote threshold. Swaps without
-    known positive quote notional cannot establish an executable window.
-    """
-    quote_total = Decimal(0)
-    token_total = Decimal(0)
-    notional = Decimal(0)
+def _window_points(events, *, start, end, pair, price_basis):
+    start, end = _utc(start), _utc(end)
     for event in events:
-        if not (_utc(start) < _utc(event.timestamp) <= _utc(end)):
+        timestamp = _utc(event.timestamp)
+        if not start < timestamp <= end:
             continue
         amounts = swap_amounts_for_basis(event, price_basis=price_basis, pair=pair)
         quote = _number(event.quote_amount)
         if amounts is None or quote is None or quote <= 0:
-            continue
-        quote_total += amounts[0]
-        token_total += amounts[1]
-        notional += quote
-    if notional < min_quote_notional or token_total <= 0:
-        return None
-    return quote_total / token_total
+            # An ineligible trade can still anchor an otherwise executable window.
+            yield WindowPoint(timestamp)
+        else:
+            yield WindowPoint(timestamp, amounts[0], amounts[1], quote)
 
 
-def max_rolling_vwap(
-    events: Iterable[TradeEvent],
-    *,
-    start: datetime,
-    end: datetime,
-    min_quote_notional: Decimal,
-    pair: Pair | None = None,
-    price_basis: str = PRICE_BASIS_HUMAN,
-) -> tuple[Decimal | None, datetime | None]:
-    """Find the best executable rolling VWAP in a bounded future horizon."""
-    bounded = sorted(
-        (event for event in events if _utc(start) < _utc(event.timestamp) <= _utc(end)),
-        key=lambda event: _utc(event.timestamp),
-    )
-    # Prefer a short execution window; use 60s only when 30s is too sparse.
-    for window_seconds in (30, 60):
-        best: tuple[Decimal, datetime] | None = None
-        for event in bounded:
-            anchor = _utc(event.timestamp)
-            value = rolling_vwap(
-                bounded,
-                start=max(_utc(start), anchor - timedelta(seconds=window_seconds)),
-                end=anchor,
-                min_quote_notional=min_quote_notional,
-                pair=pair,
-                price_basis=price_basis,
-            )
-            if value is not None and (best is None or value > best[0]):
-                best = (value, anchor)
-        if best is not None:
-            return best
-    return None, None
+def rolling_vwap(events: Iterable[TradeEvent], *, start: datetime, end: datetime,
+                 min_quote_notional: Decimal, pair: Pair | None = None,
+                 price_basis: str = PRICE_BASIS_HUMAN) -> Decimal | None:
+    """Exact totals in one basis, gated by known positive HUMAN quote notional."""
+    return window_vwap(_window_points(events, start=start, end=end, pair=pair, price_basis=price_basis),
+                       start=start, end=end, minimum=min_quote_notional)
+
+
+def max_rolling_vwap(events: Iterable[TradeEvent], *, start: datetime, end: datetime,
+                     min_quote_notional: Decimal, pair: Pair | None = None,
+                     price_basis: str = PRICE_BASIS_HUMAN) -> tuple[Decimal | None, datetime | None]:
+    """Prefer executable30s windows, then60s; sort once and slide exact totals."""
+    return best_window_vwap(_window_points(events, start=start, end=end, pair=pair, price_basis=price_basis),
+                            start=start, end=end, minimum=min_quote_notional)
 
 
 def _utc(value: datetime) -> datetime:

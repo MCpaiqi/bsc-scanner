@@ -25,6 +25,7 @@ from smms.evaluation import (
     positive_price,
 )
 from smms.radar.forward_prices import load_usd_prices
+from smms.research.maintenance import try_repair_ownership
 from smms.research.state import capture_epoch
 from smms.research.visibility import is_current_snapshot
 
@@ -95,6 +96,8 @@ def _initialize_outcomes(session, *, batch_size, now=None):
     from smms.research.state import insert_once
     from smms.research.visibility import visible_conditions
 
+    if not try_repair_ownership(session, "forward-work", FORWARD_EVALUATION_VERSION):
+        return
     cursor_query = select(ForwardEvaluationCursor).where(
         ForwardEvaluationCursor.evaluation_version == FORWARD_EVALUATION_VERSION,
     ).with_for_update(skip_locked=True).execution_options(populate_existing=True)

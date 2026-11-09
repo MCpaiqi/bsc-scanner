@@ -16,6 +16,7 @@ from smms.db.models import (
 )
 from smms.evaluation import utc
 from smms.market.protocols import PancakeSwapConfig
+from smms.research.maintenance import try_repair_ownership
 
 SWAP_TOPIC = PancakeSwapConfig().swap_topic.lower()
 
@@ -93,10 +94,17 @@ def register_pair(session: Session, pair: Pair) -> None:
 
 
 def repair_work(session: Session, *, batch_size: int) -> None:
-    _insert(session, AlphaWorkCursor, {"version": SCORE_VERSION, "last_pair_id": 0}, ["version"])
-    cursor = session.scalar(select(AlphaWorkCursor).where(
-        AlphaWorkCursor.version == SCORE_VERSION,
-    ).with_for_update())
+    if not try_repair_ownership(session, "alpha-work", SCORE_VERSION):
+        return
+    query = select(AlphaWorkCursor).where(AlphaWorkCursor.version == SCORE_VERSION).with_for_update(skip_locked=True)
+    cursor = session.scalar(query.execution_options(populate_existing=True))
+    if cursor is None:
+        if session.scalar(select(AlphaWorkCursor.version).where(AlphaWorkCursor.version == SCORE_VERSION)) is not None:
+            return
+        _insert(session, AlphaWorkCursor, {"version": SCORE_VERSION, "last_pair_id": 0}, ["version"])
+        cursor = session.scalar(query.execution_options(populate_existing=True))
+        if cursor is None:
+            return
     pairs = session.scalars(select(Pair).where(
         Pair.chain_id == 56, Pair.id > cursor.last_pair_id,
     ).order_by(Pair.id).limit(batch_size)).all()
@@ -106,8 +114,11 @@ def repair_work(session: Session, *, batch_size: int) -> None:
     session.flush()
 
 
+_UNLOADED = object()
+
+
 def coverage_proof(session: Session, pair: Pair, *, start: datetime, end: datetime,
-                   as_of: datetime) -> dict:
+                   as_of: datetime, job=_UNLOADED, receipts=None) -> dict:
     """Require exact query scope, canonical generation and linked adjacent ranges.
 
     A boundary after the requested end proves the whole interval, including a
@@ -116,13 +127,16 @@ def coverage_proof(session: Session, pair: Pair, *, start: datetime, end: dateti
     missing = {"status": "MISSING", "receipt_ids": []}
     if not pair.canonical or pair.removed or pair.creation_block is None or not pair.creation_block_hash:
         return missing
-    job = session.scalar(select(AlphaCoverageJob).where(AlphaCoverageJob.pair_id == pair.id))
-    if job is None or job.status == "INVALIDATED":
+    if job is _UNLOADED:
+        job = session.scalar(select(AlphaCoverageJob).where(AlphaCoverageJob.pair_id == pair.id))
+    if job is None or job.pair_id != pair.id or job.status == "INVALIDATED":
         return missing
-    rows = session.scalars(select(AlphaCoverageReceipt).where(
+    rows = (session.scalars(select(AlphaCoverageReceipt).where(
         AlphaCoverageReceipt.job_id == job.id, AlphaCoverageReceipt.generation == job.generation,
         AlphaCoverageReceipt.canonical.is_(True), AlphaCoverageReceipt.completed_at <= as_of,
-    ).order_by(AlphaCoverageReceipt.start_block)).all()
+    ).order_by(AlphaCoverageReceipt.start_block, AlphaCoverageReceipt.id)).all() if receipts is None else sorted(
+        (row for row in receipts if row.job_id == job.id and row.generation == job.generation
+         and row.canonical and utc(row.completed_at) <= utc(as_of)), key=lambda row: (row.start_block, row.id)))
     ids, previous, initial = [], None, None
     for row in rows:
         query = row.query_json or {}
@@ -176,7 +190,6 @@ def invalidate_coverage(session: Session, *, from_block: int, now: datetime) -> 
         job.lease_token = job.leased_until = None
         for row in session.scalars(select(AlphaSnapshot).where(
             AlphaSnapshot.chain == "bsc", AlphaSnapshot.pair_address == pair.address,
-            AlphaSnapshot.score_version == SCORE_VERSION,
         )):
             invalidate_snapshot(row, reason="CANONICAL_REORG", now=now)
         register_pair(session, pair)

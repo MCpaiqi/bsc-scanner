@@ -12,7 +12,8 @@ from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
 from smms.alpha.live import process_live_alpha
-from smms.alpha.work import SWAP_TOPIC, register_pair
+from smms.alpha.policy import SCORE_VERSION
+from smms.alpha.work import SWAP_TOPIC, invalidate_snapshot, register_pair
 from smms.db.models import (
     AlphaCoverageJob,
     AlphaCoverageReceipt,
@@ -86,16 +87,32 @@ def test_alpha_revision_upgrade_preserves_inputs_and_requires_new_coverage():
             p = session.get(Pair, pair_id)
             register_pair(session, p)
             assert process_live_alpha(session, now=now) == 0
-            pending = session.scalar(select(AlphaSnapshot).where(AlphaSnapshot.supersedes_id == legacy.id))
+            pending = session.scalar(select(AlphaSnapshot).where(AlphaSnapshot.score_version == SCORE_VERSION,
+                AlphaSnapshot.observation_seconds == 60))
             assert pending.task_status == "PENDING_INPUT" and pending.alpha_score is None
+            assert pending.supersedes_id is None and pending.input_revision == 0
             session.add(AlphaCoverageReceipt(job_id=job_id, generation=1, **receipt_values))
             process_live_alpha(session, now=now + timedelta(seconds=61))
             session.commit()
-            assert pending.input_revision == 1 and pending.input_manifest["trade_ids"]
+            assert pending.input_revision == 0 and pending.input_manifest["trade_ids"]
             assert pending.task_status == "COMPLETE" and legacy.alpha_score == 99
+            # A new recipe starts at revision0; only a same-recipe reconstruction
+            # exercises the appended-revision downgrade guard.
+            invalidate_snapshot(pending, reason="TEST_REBUILD", now=now + timedelta(seconds=120))
+            register_pair(session, p)
+            process_live_alpha(session, now=now + timedelta(seconds=121))
+            replacement = session.scalar(select(AlphaSnapshot).where(AlphaSnapshot.supersedes_id == pending.id))
+            assert replacement.input_revision == 1 and replacement.score_version == SCORE_VERSION
+            assert replacement.task_status == "COMPLETE" and replacement.input_manifest["trade_ids"]
+            assert pending.task_status == "INVALIDATED" and legacy.alpha_score == 99
+            session.commit()
         refused = alembic("downgrade", "20261106_0036")
         assert refused.returncode != 0 and "Alpha research revisions exist" in refused.stderr
-        assert "20261106_0043" in alembic("current").stdout
+        from alembic.config import Config
+        from alembic.script import ScriptDirectory
+
+        head = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini"))).get_current_head()
+        assert head in alembic("current").stdout
     finally:
         scoped.dispose()
         try:

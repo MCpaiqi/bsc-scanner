@@ -89,7 +89,7 @@ class AlphaSnapshot(Base):
     age_seconds: Mapped[int] = mapped_column(BigInteger, nullable=False)
     observation_seconds: Mapped[int] = mapped_column(nullable=False)
     alpha_score: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
-    score_version: Mapped[str] = mapped_column(String(64), nullable=False, default="experimental-v3")
+    score_version: Mapped[str] = mapped_column(String(64), nullable=False, default="experimental-v4")
     task_status: Mapped[str] = mapped_column(String(32), nullable=False, default="LEGACY", server_default="LEGACY")
     next_evaluation_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     coverage_generation: Mapped[int | None] = mapped_column()

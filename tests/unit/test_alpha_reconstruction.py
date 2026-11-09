@@ -18,6 +18,7 @@ from smms.alpha.live import process_live_alpha
 from smms.alpha.work import invalidate_coverage, register_pair
 from smms.api.radar import _alpha_payload, _fresh_alpha_latest_rows, alpha_statistics
 from smms.db.models import AlphaCoverageJob, AlphaSnapshot, Pair
+from smms.evaluation import utc
 
 research_session = _research_session
 coverage_session = _coverage_session
@@ -113,8 +114,8 @@ def test_rediscovery_keeps_old_creation_time_and_makes_new_windows(research_sess
     research_session.flush()
     rows = research_session.scalars(select(AlphaSnapshot).where(AlphaSnapshot.task_status == "PENDING_INPUT")).all()
     assert len(rows) == 4
-    assert all(r.pair_created_at.replace(tzinfo=T0.tzinfo) == p.creation_timestamp for r in rows)
-    assert all(r.pair_created_at.replace(tzinfo=T0.tzinfo) == T0 for r in original)
+    assert all(utc(r.pair_created_at) == p.creation_timestamp for r in rows)
+    assert all(utc(r.pair_created_at) == T0 for r in original)
 
 
 def test_never_scanned_pair_rediscovery_resets_pending_anchor(research_session):
@@ -132,7 +133,7 @@ def test_never_scanned_pair_rediscovery_resets_pending_anchor(research_session):
     assert job.next_block == 105 and job.generation > 0
     pending = research_session.scalars(select(AlphaSnapshot).where(AlphaSnapshot.task_status == "PENDING_INPUT")).all()
     assert len(pending) == 4 and all(row.input_revision == 1 for row in pending)
-    assert all(row.pair_created_at.replace(tzinfo=T0.tzinfo) == p.creation_timestamp for row in pending)
+    assert all(utc(row.pair_created_at) == p.creation_timestamp for row in pending)
     assert all(row.task_status == "INVALIDATED" for row in original)
 
 

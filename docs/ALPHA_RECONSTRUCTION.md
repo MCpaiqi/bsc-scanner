@@ -1,13 +1,13 @@
 # Alpha research revisions and source lineage
 
-Apply Alembic through `20261106_0037` before running the updated services.
+Apply Alembic through `20261107_0045` before running the updated services.
 This extends the [coverage contract](ALPHA_COVERAGE.md) with automatic Alpha
 reconstruction. The full R3 programme also covers other derived snapshots and
 materialized research; those remain open in [the ledger](RESEARCH_RELIABILITY.md).
 
 ## Revisions
 
-A scoring recipe (`experimental-v3`) is separate from its input revision. Each
+A scoring recipe (`experimental-v4`) is separate from its input revision. Each
 token/pair/window may have revision 0, 1, … under that recipe. `supersedes_id`
 links a replacement to the earlier snapshot. The unique revision key makes
 concurrent registration converge on one replacement per window.
@@ -78,6 +78,16 @@ remains explicitly pending. Downgrade refuses to discard appended revisions.
 
 Market/risk/intelligence/radar snapshots, early-buyer aggregates, Forward entry
 observations and exported historical datasets still require their full lineage
-and reconstruction work. This Alpha slice does not complete R3. Dense-path input
-manifest storage, selective database loading and global publication-lock latency
-also remain R11 work. Full Compose restart/live-provider acceptance remains R14.
+and reconstruction work. This Alpha slice does not complete R3. Current due Alpha
+inputs now use batched, window-scoped database reads. Dense-path manifest storage,
+canonical-anchor retention, asynchronous reconstruction throughput and global
+publication-lock latency remain R11 work. Full Compose restart/live-provider
+acceptance remains R14.
+
+
+The v4 exact-window arithmetic is a new recipe, not a revision of v3. Archived
+v3 rows remain available as stored research; new v4 windows start at input revision0
+with their own policy/manifests and denominator. Canonical invalidation marks
+archived recipes untrusted too, preserving their original outcome in audit data.
+Automatic reconstruction emits the active recipe; it does not claim to rerun an
+unsupported archived algorithm under a new version label.

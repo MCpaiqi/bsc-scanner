@@ -42,9 +42,9 @@ def raw_trade(seconds, *, tx, ratio=2, human=False, quote="2"):
     return row
 
 
-def test_unknown_risk_is_not_safe_and_version_is_v3():
+def test_unknown_risk_is_not_safe_and_version_is_v4():
     result = score_features({})
-    assert SCORE_VERSION == result["score_version"] == "experimental-v3"
+    assert SCORE_VERSION == result["score_version"] == "experimental-v4"
     assert result["risk_status"] == "UNKNOWN"
     assert result["components"]["risk_quality"] == 0
     assert "risk data unavailable" in result["warnings"]

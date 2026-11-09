@@ -9,7 +9,9 @@ import os
 import socket
 from datetime import UTC, datetime
 from decimal import Decimal
+from time import perf_counter
 
+from asyncpg import PostgresError
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -50,7 +52,7 @@ async def heartbeat(worker_type: str, status: str, current_job: str | None = Non
                 row = WorkerHeartbeat(
                     instance_id=_instance_id(), worker_type=worker_type,
                     last_heartbeat_at=now, status=status, current_job=current_job,
-                    details_json={},
+                    details_json=dict(details or {}),
                 )
                 sync.add(row)
             else:
@@ -535,22 +537,72 @@ async def run_event_relay() -> None:
         await asyncio.sleep(1)
 
 
+async def _report_research_cycle(status, report):
+    details = {"research_cycle": dict(report)}
+    if report["committed"]:
+        details["last_committed_research_cycle"] = dict(report)
+    try:
+        await asyncio.wait_for(heartbeat("forward-worker", status, details=details), timeout=2)
+    except (SQLAlchemyError, PostgresError, OSError, TimeoutError, ValueError, RuntimeError) as exc:
+        logging.getLogger(__name__).warning("research heartbeat unavailable reason=%s", type(exc).__name__)
+
+
+async def run_forward_cycle(settings, *, at=None):
+    """One atomic research cycle; report committed counters after commit only."""
+    from smms.alpha.live import process_live_alpha
+    from smms.evaluation import utc
+
+    started = perf_counter()
+    cutoff = utc(at or datetime.now(UTC))
+    report = {"phase": "FORWARD", "committed": False, "started_at": datetime.now(UTC).isoformat(),
+              "finished_at": None, "evaluation_as_of": cutoff.isoformat(), "seconds": 0.0,
+              "forward_seconds": None, "alpha_seconds": None, "commit_seconds": None,
+              "forward_evaluated": None, "alpha_scored": None, "error_code": None}
+    async def emit(status):
+        report["seconds"] = max(0.0, perf_counter() - started)
+        await _report_research_cycle(status, report)
+    try:
+        await emit("RUNNING")
+        async with session_scope(settings) as session:
+            stage = perf_counter()
+            forward = await session.run_sync(lambda sync: evaluate_due(sync, at=cutoff, batch_size=256))
+            report["forward_seconds"] = max(0.0, perf_counter() - stage)
+            report["phase"] = "ALPHA"
+            await emit("RUNNING")
+            stage = perf_counter()
+            alpha = await session.run_sync(lambda sync: process_live_alpha(sync, now=cutoff, batch_size=128,
+                minimum_quote=Decimal(str(settings.alpha_min_future_quote_notional))))
+            report["alpha_seconds"] = max(0.0, perf_counter() - stage)
+            report["phase"] = "COMMIT"
+            await emit("RUNNING")
+            stage = perf_counter()
+            await session.commit()
+            report["commit_seconds"] = max(0.0, perf_counter() - stage)
+        report.update(phase="IDLE", committed=True, forward_evaluated=forward, alpha_scored=alpha,
+                      finished_at=datetime.now(UTC).isoformat())
+        await emit("RUNNING")
+    except asyncio.CancelledError:
+        report.update(error_code="CANCELLED", finished_at=datetime.now(UTC).isoformat())
+        await emit("STOPPED")
+        raise
+    except (SQLAlchemyError, PostgresError, OSError, ValueError) as exc:
+        report.update(error_code="DB_ERROR" if isinstance(exc, (SQLAlchemyError, PostgresError)) else
+                      "IO_ERROR" if isinstance(exc, OSError) else "INVALID_INPUT",
+                      finished_at=datetime.now(UTC).isoformat())
+        await emit("DEGRADED")
+        logging.getLogger(__name__).warning("research cycle retry phase=%s reason=%s", report["phase"], type(exc).__name__)
+    except Exception:
+        report.update(error_code="INTERNAL_ERROR", finished_at=datetime.now(UTC).isoformat())
+        await emit("DEGRADED")
+        raise
+    return report
+
+
 async def run_forward() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     settings = get_settings()
     while True:
-        await heartbeat("forward-worker", "RUNNING")
-        async with session_scope(settings) as session:
-            await session.run_sync(lambda sync: evaluate_due(sync))
-            from smms.alpha.live import process_live_alpha
-            await session.run_sync(
-                lambda sync: process_live_alpha(
-                    sync,
-                    now=datetime.now(UTC),
-                    minimum_quote=Decimal(str(settings.alpha_min_future_quote_notional)),
-                )
-            )
-            await session.commit()
+        await run_forward_cycle(settings)
         await asyncio.sleep(30)
 
 

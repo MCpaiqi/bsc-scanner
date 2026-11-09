@@ -11,6 +11,7 @@ from test_historical_dataset_integrity import price
 from test_research_integrity import research_session as _research_session
 
 from smms.db.models import LiveSignalObservation, LiveSignalOutcome, Pair
+from smms.evaluation import utc
 from smms.radar.engine import RadarEngine
 from smms.radar.live_forward import evaluate_due, performance, record_observation
 from smms.research.rebuild import rebuild_due
@@ -66,7 +67,7 @@ def test_rebuild_corrects_price_path_and_preserves_original_evaluation_time(rese
     assert current is not None and current.id != old.id
     assert current.return_pct == Decimal("-0.5") and old.return_pct == 1
     assert current.previous_snapshot_id == old.id
-    assert current.evaluated_at.replace(tzinfo=T0.tzinfo) == EVALUATED
+    assert utc(current.evaluated_at) == EVALUATED
     assert current.observation_id != original.id and current.observation_root_id == original.id
     assert "future" not in str(current.input_manifest)
 
@@ -96,7 +97,7 @@ def test_repeated_transition_keeps_first_t0_when_rebuilding(research_session):
     recover(research_session)
     current = record_observation(research_session, candidate, "WATCH", at=T0 + timedelta(seconds=20))
     assert current.id != original.id and current.price == 2
-    assert current.observed_at.replace(tzinfo=T0.tzinfo) == T0
+    assert utc(current.observed_at) == T0
 
 
 def test_published_return_cannot_be_overwritten(research_session):
@@ -135,7 +136,7 @@ def test_missing_entry_can_be_reconstructed_after_delayed_ingestion(research_ses
     current = research_session.scalar(select(LiveSignalObservation))
     result = research_session.scalar(select(LiveSignalOutcome).where(LiveSignalOutcome.horizon == "30s"))
     assert current.id != original.id and current.price == 2 and original.price is None
-    assert current.observed_at.replace(tzinfo=T0.tzinfo) == T0
+    assert utc(current.observed_at) == T0
     assert result.return_pct == 1
 
 

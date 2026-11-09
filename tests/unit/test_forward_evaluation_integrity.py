@@ -21,6 +21,7 @@ from smms.db.models import (
     TokenMarketSnapshot,
     TradeEvent,
 )
+from smms.evaluation import utc
 from smms.radar.live_forward import evaluate_due, performance, record_observation
 
 T0 = datetime(2026, 1, 1, tzinfo=UTC)
@@ -223,7 +224,7 @@ def test_usd_snapshot_path_is_evaluated_with_endpoint_provenance(research_sessio
     result = outcome(research_session, row)
     assert result.status == "COMPLETE"
     assert result.return_pct == Decimal("0.2")
-    assert result.endpoint_at.replace(tzinfo=UTC) == T0 + timedelta(seconds=30)
+    assert utc(result.endpoint_at) == T0 + timedelta(seconds=30)
     assert result.provenance_json["endpoint"]["model"] == "TokenMarketSnapshot"
     assert result.provenance_json["endpoint"]["id"] == snapshot.id
     assert result.provenance_json["price_basis"] == "USD"
@@ -303,7 +304,7 @@ def test_pending_retry_and_cursor_survive_a_new_session(research_session):
     evaluate_due(research_session, at=T0 + timedelta(seconds=30))
     pending = research_session.scalar(select(ForwardEvaluationJob).where(ForwardEvaluationJob.observation_id == row.id, ForwardEvaluationJob.horizon == "30s"))
     assert pending.error_code == "MISSING_PRICE"
-    assert pending.next_evaluation_at.replace(tzinfo=UTC) == T0 + timedelta(seconds=90)
+    assert utc(pending.next_evaluation_at) == T0 + timedelta(seconds=90)
     market(research_session, row, 30, "1.2")  # delayed ingestion, original event time
     row_id = row.id
     research_session.commit()

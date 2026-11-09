@@ -1412,6 +1412,8 @@ async def health() -> dict[str, object]:
 
 def _worker_health(sync, *, now: datetime) -> dict[str, dict[str, object]]:
     """Translate durable worker heartbeats into secret-free source health."""
+    from smms.research.telemetry import research_worker_health
+
     worker_types = {
         "bsc-ingestion": "bsc_ingestion",
         "bsc-market-enrichment": "bsc_market_enrichment",
@@ -1462,6 +1464,8 @@ def _worker_health(sync, *, now: datetime) -> dict[str, dict[str, object]]:
             "age_seconds": age,
             "current_job": row.current_job,
         }
+        if worker_type == "forward-worker":
+            result[source]["research"] = research_worker_health(row.details_json)
     return result
 
 

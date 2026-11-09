@@ -9,6 +9,7 @@ from enum import Enum
 from sqlalchemy import select
 
 from smms.alpha.policy import LABEL_VERSION, SCORE_VERSION, policy_id
+from smms.alpha.vwap import VWAP_ARITHMETIC
 from smms.db.models import AlphaCoverageReceipt
 from smms.evaluation import utc
 
@@ -38,11 +39,13 @@ def digest_manifest(payload: dict) -> str:
 
 
 def input_manifest(session, *, pair, trades, proof, start, end, now, minimum_quote,
-                   basis, entry=None, entry_digest=None):
+                   basis, entry=None, entry_digest=None, receipts=None):
     """Record what was actually read; future facts never enter entry manifests."""
-    rows = session.scalars(select(AlphaCoverageReceipt).where(
-        AlphaCoverageReceipt.id.in_(proof.get("receipt_ids", [])),
-    ).order_by(AlphaCoverageReceipt.start_block, AlphaCoverageReceipt.id)).all()
+    ids = set(proof.get("receipt_ids", []))
+    rows = (session.scalars(select(AlphaCoverageReceipt).where(
+        AlphaCoverageReceipt.id.in_(ids),
+    ).order_by(AlphaCoverageReceipt.start_block, AlphaCoverageReceipt.id)).all() if receipts is None else
+        sorted((row for row in receipts if row.id in ids), key=lambda row: (row.start_block, row.id)))
     trade_fields = ("id", "chain", "token_address", "pair_address", "trader_address", "side",
                     "timestamp", "block_number", "block_hash", "tx_hash", "event_index",
                     "quote_amount", "token_amount", "price_quote", "token_decimals", "quote_decimals",
@@ -53,7 +56,7 @@ def input_manifest(session, *, pair, trades, proof, start, end, now, minimum_quo
                       "query_json", "completed_at")
     payload = _json({
         "schema_version": MANIFEST_VERSION, "chain_id": 56,
-        "score_version": SCORE_VERSION, "label_version": LABEL_VERSION,
+        "score_version": SCORE_VERSION, "label_version": LABEL_VERSION, "vwap_arithmetic": VWAP_ARITHMETIC,
         "policy_id": policy_id(minimum_quote), "minimum_quote": minimum_quote,
         "price_basis": basis, "entry_vwap": entry, "entry_manifest_digest": entry_digest,
         "start": start, "end": end, "pair": {

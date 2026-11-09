@@ -24,6 +24,15 @@ def select_entry_price(prices, *, at):
     return min((p for p in entries if p.timestamp == latest), key=lambda p: p.reference, default=None)
 
 
+def _price_rows(session, query, model, time_column, ranges):
+    # Bound SQL expression depth/parameters as well as the number of due jobs.
+    for offset in range(0, len(ranges), 200):
+        chunk = ranges[offset:offset + 200]
+        bounded = query.where(or_(*(and_(model.token_address == token, time_column >= start, time_column <= end)
+                                    for token, start, end in chunk)))
+        yield from session.scalars(bounded.order_by(time_column, model.id).execution_options(populate_existing=True))
+
+
 def load_usd_prices(
     session: Session,
     ranges: list[tuple[str, datetime, datetime]],
@@ -65,14 +74,12 @@ def load_usd_prices(
         query = select(model).where(
             chain, price_column.is_not(None), price_column > 0, valid_pair,
             time_column <= as_of, *canonical_fact_conditions(model),
-            or_(*(and_(model.token_address == token, time_column >= start, time_column <= end)
-                  for token, start, end in merged)),
         )
         if model is TokenMarketSnapshot:
             query = query.where(model.status == "KNOWN", model.as_of <= as_of)
         if model is MarketEvent:
             query = query.where(model.metadata_json["price_basis"].as_string() == "USD")
-        for row in session.scalars(query.order_by(time_column, model.id).execution_options(populate_existing=True)):
+        for row in _price_rows(session, query, model, time_column, merged):
             value = positive_price(getattr(row, price_column.key))
             if value is None:
                 continue

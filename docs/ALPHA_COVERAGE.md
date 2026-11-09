@@ -1,8 +1,8 @@
 # Live Alpha coverage and recovery
 
-The live recipe is `experimental-v3`, with labels `alpha-shadow-v2`. Earlier
+The live recipe is `experimental-v4`, with labels `alpha-shadow-v3`. Earlier
 scores and labels remain stored under their original versions. Run Alembic
-through `20261106_0037` before starting the updated application or workers.
+through `20261107_0045` before starting the updated application or workers.
 
 `alpha-coverage` is an independent Compose worker. It scans each admitted
 PancakeSwap pair from its creation block through the first 65 minutes using
@@ -52,10 +52,11 @@ observed rapid-fire penalty remains explicit. The high-score threshold is 70.
 Reorg reconciliation invalidates affected receipts and clears trusted labels;
 scored historical inputs are retained as INVALIDATED and corrected Alpha revisions
 are enqueued automatically; see [reconstruction and lineage](ALPHA_RECONSTRUCTION.md).
-Other derived snapshot reconstruction remains part of the open R3 gate. Deferred market
-projection parity/outbox, dense-path VWAP performance, full Compose restart and
-real-provider archive availability remain separate open programme requirements.
-Canonical anchor retention and publication-lock latency also remain part of R11.
+Other derived snapshot reconstruction remains part of the open R3 gate. Transactional
+projection/outbox and bounded SSE recovery are recorded separately in the programme
+ledger. Full Compose restart and real-provider archive availability remain open.
+Canonical anchor/provenance retention, publication-lock latency and asynchronous
+reconstruction throughput remain part of the wider R11 performance gate.
 An unavailable archive cannot be turned into a completed negative result.
 
 Verification uses `tests/unit/test_alpha_coverage_integrity.py`,
@@ -64,3 +65,24 @@ Verification uses `tests/unit/test_alpha_coverage_integrity.py`,
 `SMMS_RESEARCH_TEST_DATABASE_URL` / `SMMS_MIGRATION_TEST_DATABASE_URL` point these
 tests at an isolated PostgreSQL database; each owns and removes a unique schema.
 No live RPC or production database is used by these tests.
+
+
+## Dense-input execution and rollout
+
+The v4 recipe uses `exact-scaled-integer-v1` VWAP totals. Each eligible trade is
+resolved once, equal timestamps enter together, and a sliding sweep tests (start,end]
+windows after sorting. Any executable30s window is preferred to60s fallback; ties
+keep the first anchor. HUMAN quote notional still gates both HUMAN and RAW bases.
+Exact totals prevent losing a small remaining amount when a large trade expires,
+and avoid rounded notional gates. Final division still follows Decimal context.
+Because boundary results can change, v3 snapshots are retained under their original
+recipe and excluded from the new v4 cohort; historical exports use alpha-labels-v2.
+The new policy ID includes the arithmetic identity and exact notional text. Entry
+and evaluation manifests identify the arithmetic explicitly. Rebuilding the active
+cohort does not overwrite archived experiments or mix their denominators.
+
+Only due pending/tracking snapshots load price inputs. One batch shares pair/job/
+receipt/trade reads and isolates each pair/token/window. SQL predicates are chunked
+at200 ranges; exact data inside a valid horizon is not silently truncated. A bounded
+cyclic repair remains necessary for late commits; PostgreSQL maintenance ownership
+is schema/component/version scoped and nonblocking, including first startup.

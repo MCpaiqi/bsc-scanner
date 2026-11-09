@@ -28,6 +28,8 @@ explicit UNKNOWN states. Preserve existing local data and untracked source.
 - [x] R10: annotations and token/global alerts have explicit scope and visible save results.
 - [ ] R11: evaluation work is bounded by due pending tasks; prices are fetched in
   batches; VWAP processing avoids quadratic rescans; runtime latency is observable.
+  Canonical anchors/provenance and dense/UNKNOWN history remain retained; publication
+  lock latency and asynchronous reconstruction throughput still require closure.
 - [ ] R12: clean-checkout backend/frontend checks and PostgreSQL migrations run in
   CI; release dependencies/configuration are reproducible; critical paths have
   restart/reorg/rollback/coverage interruption tests.
@@ -850,3 +852,63 @@ separate gate; schema creation inside regressions does not prove migration parit
 - Remaining audit: R13 must harden analyst access and condition operand validation;
   R3 must review manual evaluation provenance; R14 must verify delivery semantics
   and the full isolated topology. R3 and R11–R14 remain OPEN under the original goal.
+
+
+## Due-work runtime and exact VWAP (2026-11-09)
+
+- This batch advances R11 without closing its wider retention/publication/rebuild
+  obligations. Only due pending/tracking Alpha snapshots load trade inputs; a
+  completed/not-due regression requires zero trade queries. Pairs/jobs/receipts
+  and exact pair/token/time trade ranges share batch reads, with at most200 range
+  predicates per SQL query. Manifest receipt reuse retains the existing generation,
+  canonicality, query-scope and evaluation-cutoff proof checks. Forward price ranges
+  use the same predicate bound; valid dense data inside each horizon is retained.
+- VWAP resolves every eligible trade once, sorts timestamps and slides exact
+  scaled-integer totals. Equal timestamps enter together, (start,end] boundaries,
+  earliest ties, invalid-amount anchors, HUMAN notional gates and30s-before60s
+  preference remain explicit. Large expired amounts cannot round away a tiny
+  surviving amount. Final division still follows Decimal context. Independent
+  rational-reference and RAW uint regressions cover arithmetic and basis isolation.
+- Corrected rounding edges create a new recipe: experimental-v4 / alpha-shadow-v3,
+  historical alpha-labels-v2, with exact arithmetic identity in policy/manifests.
+  Old v3 scores/manifests remain stored under their own recipe and outside the new
+  denominator. Canonical invalidation covers archived recipes too; reconstruction
+  emits the active recipe without pretending to rerun an archived algorithm.
+- Cyclic bounded registration remains necessary for sequence/commit-order inversion.
+  PostgreSQL repair ownership is schema/component/version scoped and transaction
+  bounded; skip-locked cursor access plus nonblocking advisory ownership prevents
+  both warm repair and first-startup registration from stalling independent work.
+- Forward/Alpha cycles report phase boundaries, stage/total duration, fixed error
+  categories and only successfully committed counters through durable heartbeats.
+  Independent API sessions read a whitelisted research summary from /health.
+  Cancellation rolls back and propagates; report failures cannot erase a successful
+  source commit. Reports are stage-boundary observations for the current instance,
+  not continuous CPU timers or a cross-restart latency history/SLO.
+- One fresh read-only review found one Important malformed-heartbeat validation
+  issue. List/dict enum fields and a UTC-overflow timestamp were reproduced RED
+  through the actual health endpoint, then fixed GREEN. No Critical or deferred
+  Minor findings. The plan records the accepted boundaries and remaining costs.
+- Real non-UTC PostgreSQL exposed eight old assertions that replaced timezone
+  labels instead of converting instants. They now compare utc() values; product
+  timestamps were not changed. A RAW regression fixture also needed an explicit
+  BUY direction, as required by the existing amount-recovery contract.
+- Synthetic dense VWAP evidence:400 trades previously resolved the basis160000
+  times (0.6652s); the new path resolves400 times (0.002209s).10000 trades resolve
+  exactly10000 times (0.055424s). These local synthetic timings are not production
+  throughput guarantees, and no dense-window facts were truncated for the benchmark.
+- Final backend: **817 passed, 42 skipped, 13 existing warnings**. The final
+  PostgreSQL16 selection passed113 runtime/concurrency/reconstruction checks; the
+  separate final historical upgrade/downgrade check passed1 test. Its v4 recipe0
+  is rebuilt as revision1 before verifying the Alpha downgrade refusal. Global
+  invalidation correctly reaches the newer Derived guard first, so this fixture
+  uses the targeted Alpha helper to isolate the intended guard. Broader revision0
+  manifest archival/downgrade policy remains R12, not a claim of this check.
+- The changed Forward timestamp-assertion file also passed17 SQLite checks with4
+  skips. Frontend source is unchanged in this batch; its76 tests and TypeScript/
+  production build passed during batch verification. Existing frontend act warnings
+  remain. Full Ruff and whitespace checks passed.
+- Verified zero owned schemas and other database clients, then stopped the owned
+  foreground PostgreSQL instance and observed its terminal exit. Temporary evidence
+  remains outside Git. No provider call, production write, merge or deployment
+  occurred. R3 and R11–R14 remain OPEN; the original programme continues, with
+  scoped verified commits pushed to origin/codex/research-integrity as authorized.
