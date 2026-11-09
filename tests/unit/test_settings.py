@@ -4,7 +4,10 @@ from pydantic import ValidationError
 from smms.config.settings import Settings
 
 
-def test_defaults_are_paper_first() -> None:
+def test_defaults_are_paper_first(monkeypatch) -> None:
+    # _env_file=None disables dotenv, not explicit process-level CI overrides.
+    monkeypatch.delenv("BSC_RPC_URL", raising=False)
+    monkeypatch.delenv("BSC_RPC_URLS", raising=False)
     settings = Settings(_env_file=None)
     assert settings.trading_mode == "PAPER"
     assert settings.is_paper_mode
@@ -14,6 +17,12 @@ def test_defaults_are_paper_first() -> None:
     assert settings.bsc_rpc_endpoints == ()
     assert settings.bsc_live_tail_stream_name == "bsc_realtime_live_tail_v2"
     assert settings.bsc_log_address_batch_size == 4
+
+
+def test_explicit_blank_provider_overrides_remain_not_configured() -> None:
+    settings = Settings(_env_file=None, BSC_RPC_URL="", BSC_RPC_URLS="", BSC_WS_URL="", BSC_WS_URLS="")
+    assert settings.bsc_rpc_endpoints == () and settings.bsc_ws_endpoints == ()
+    assert settings.bsc_provider_name == "not_configured"
 
 
 def test_bsc_rpc_operational_limits_and_endpoint_failover_are_configurable() -> None:

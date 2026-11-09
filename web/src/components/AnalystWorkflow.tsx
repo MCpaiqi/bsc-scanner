@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api/client";
 import { alertRequestId } from "../utils/alert-request";
+import { AnalystAccess, useAnalystAccess } from "./AnalystAccess";
 
 type Draft = { favorite: boolean; note: string; tags: string };
 const blank: Draft = { favorite: false, note: "", tags: "" };
@@ -10,6 +11,7 @@ const signature = (draft: Draft) => JSON.stringify(contents(draft));
 
 
 export function AnalystWorkflow({ chain, token: rawToken }: { chain: string; token: string }) {
+  const access = useAnalystAccess();
   const token = chain === "bsc" ? rawToken.trim().toLowerCase() : rawToken;
   const [draft, setDraft] = useState<Draft>(blank);
   const draftRef = useRef(draft); draftRef.current = draft;
@@ -19,7 +21,7 @@ export function AnalystWorkflow({ chain, token: rawToken }: { chain: string; tok
   const [readError, setReadError] = useState(false);
   const [saving, setSaving] = useState(false);
   const saveBusy = useRef(false);
-  const [saveResult, setSaveResult] = useState<"idle" | "saved" | "error" | "conflict">("idle");
+  const [saveResult, setSaveResult] = useState<"idle" | "saved" | "error" | "conflict" | "authorization" | "read-only">("idle");
   const [latest, setLatest] = useState<Draft | null>(null);
   const alive = useRef(true);
   const preserveReadDraft = useRef(false);
@@ -64,9 +66,12 @@ export function AnalystWorkflow({ chain, token: rawToken }: { chain: string; tok
     alive.current = true; void load();
     return () => { alive.current = false; readController.current?.abort(); writes.current.forEach(controller => controller.abort()); };
   }, [chain, token]);
+  useEffect(() => {
+    if (access.canWrite) setSaveResult(current => current === "authorization" || current === "read-only" ? "idle" : current);
+  }, [access.canWrite]);
 
   const save = async () => {
-    if (saveBusy.current || revision === null || loading || readError || !dirty || saveResult === "conflict") return;
+    if (!access.canWrite || saveBusy.current || revision === null || loading || readError || !dirty || saveResult === "conflict") return;
     saveBusy.current = true; setSaving(true); setSaveResult("idle");
     const sent = draftRef.current;
     const controller = new AbortController(); writes.current.add(controller);
@@ -76,14 +81,17 @@ export function AnalystWorkflow({ chain, token: rawToken }: { chain: string; tok
       if (typeof result.revision !== "number" || result.revision <= revision) throw new Error("invalid save revision");
       setRevision(result.revision); setBaseline(signature(sent)); setLatest(null); setSaveResult("saved");
     } catch (error) {
-      if (alive.current && !controller.signal.aborted) setSaveResult(error instanceof ApiError && error.status === 409 ? "conflict" : "error");
+      if (alive.current && !controller.signal.aborted && error instanceof ApiError &&
+          (error.status === 401 || error.code === "ANALYST_READ_ONLY")) void access.retry();
+      if (alive.current && !controller.signal.aborted) setSaveResult(error instanceof ApiError
+        ? error.status === 409 ? "conflict" : error.status === 401 ? "authorization" : error.code === "ANALYST_READ_ONLY" ? "read-only" : "error" : "error");
     } finally {
       writes.current.delete(controller); saveBusy.current = false;
       if (alive.current) setSaving(false);
     }
   };
   const createAlert = async () => {
-    if (alertPending.current || !validScore || alertResult?.signature === alertSignature) return;
+    if (!access.canWrite || alertPending.current || !validScore || alertResult?.signature === alertSignature) return;
     alertPending.current = true; setAlertBusy(true);
     const sentScope = scope;
     const controller = new AbortController(); writes.current.add(controller);
@@ -94,34 +102,39 @@ export function AnalystWorkflow({ chain, token: rawToken }: { chain: string; tok
       if (!alive.current || controller.signal.aborted) return;
       if (!Number.isInteger(result.id) || result.scope !== sentScope || result.token_address !== alertBody.token_address) throw new Error("invalid rule scope response");
       setAlertResult({ message: `已创建${sentScope === "TOKEN" ? "当前代币" : "全局 BSC"}提醒 #${result.id}`, failed: false, signature: alertSignature });
-    } catch {
-      if (alive.current && !controller.signal.aborted) setAlertResult({ message: "提醒创建失败，重试将使用同一请求编号。", failed: true });
+    } catch (error) {
+      if (alive.current && !controller.signal.aborted && error instanceof ApiError &&
+          (error.status === 401 || error.code === "ANALYST_READ_ONLY")) void access.retry();
+      if (alive.current && !controller.signal.aborted) setAlertResult({ message: error instanceof ApiError && error.status === 401
+        ? "访问授权已失效，请重新解锁后重试。" : error instanceof ApiError && error.code === "ANALYST_READ_ONLY"
+          ? "工作台已切换为只读，暂不能创建提醒。" : "提醒创建失败，重试将使用同一请求编号。", failed: true });
     } finally {
       writes.current.delete(controller); alertPending.current = false;
       if (alive.current) setAlertBusy(false);
     }
   };
   return <section className="analyst-workflow" aria-label="研究工作流">
+    <AnalystAccess access={access} />
     <div className="detail-block workflow"><h3>当前代币备注与收藏</h3>
       <p className="workflow-scope">BNB Smart Chain · {token}</p>
       {loading && <p role="status">正在读取备注…</p>}
       {readError && <p role="alert">备注读取失败，暂不能保存。<button type="button" onClick={() => void load(Boolean(latest) || dirty)}>重新读取备注</button></p>}
-      <label><input type="checkbox" checked={draft.favorite} disabled={loading || readError} onChange={event => setDraft(current => ({ ...current, favorite: event.target.checked }))} /> 收藏（随备注一起保存）</label>
-      <label className="workflow-wide">备注<textarea value={draft.note} disabled={loading || readError} onChange={event => setDraft(current => ({ ...current, note: event.target.value }))} placeholder="备注" /></label>
-      <label className="workflow-wide">标签<input value={draft.tags} disabled={loading || readError} onChange={event => setDraft(current => ({ ...current, tags: event.target.value }))} placeholder="标签，用逗号分隔" /></label>
-      <button type="button" disabled={saving || loading || readError || revision === null || !dirty || saveResult === "conflict"} onClick={() => void save()}>{saving ? "保存中…" : "保存备注"}</button>
-      <p role={saveResult === "error" || saveResult === "conflict" ? "alert" : "status"}>
-        {saveResult === "conflict" ? "保存冲突：已有其他更新，草稿已保留。" : saveResult === "error" ? "备注保存失败，草稿已保留，可以重试。" : saving ? "正在提交备注…" : dirty ? saveResult === "saved" ? "上次提交已保存；当前修改尚未保存。" : "当前修改尚未保存。" : saveResult === "saved" ? "备注已保存。" : "无未保存修改。"}
+      <label><input type="checkbox" checked={draft.favorite} disabled={!access.canWrite || loading || readError} onChange={event => setDraft(current => ({ ...current, favorite: event.target.checked }))} /> 收藏（随备注一起保存）</label>
+      <label className="workflow-wide">备注<textarea value={draft.note} readOnly={!access.canWrite} disabled={loading || readError} onChange={event => setDraft(current => ({ ...current, note: event.target.value }))} placeholder="备注" /></label>
+      <label className="workflow-wide">标签<input value={draft.tags} readOnly={!access.canWrite} disabled={loading || readError} onChange={event => setDraft(current => ({ ...current, tags: event.target.value }))} placeholder="标签，用逗号分隔" /></label>
+      <button type="button" disabled={!access.canWrite || saving || loading || readError || revision === null || !dirty || saveResult === "conflict"} onClick={() => void save()}>{saving ? "保存中…" : "保存备注"}</button>
+      <p role={["error", "conflict", "authorization", "read-only"].includes(saveResult) ? "alert" : "status"}>
+        {saveResult === "authorization" ? "访问授权已失效，草稿已保留，请重新解锁。" : saveResult === "read-only" ? "工作台已切换为只读，草稿已保留。" : saveResult === "conflict" ? "保存冲突：已有其他更新，草稿已保留。" : saveResult === "error" ? "备注保存失败，草稿已保留，可以重试。" : saving ? "正在提交备注…" : dirty ? saveResult === "saved" ? "上次提交已保存；当前修改尚未保存。" : "当前修改尚未保存。" : saveResult === "saved" ? "备注已保存。" : "无未保存修改。"}
       </p>
       {saveResult === "conflict" && <button type="button" disabled={loading} onClick={() => void load(true)}>读取最新版本并保留草稿</button>}
       {latest && <div className="workflow-latest"><p>最新已保存版本（请核对后保存当前草稿）</p><p>收藏：{latest.favorite ? "是" : "否"} · 标签：{latest.tags || "无"}</p><pre>{latest.note || "无备注"}</pre></div>}
     </div>
     <div className="detail-block workflow"><h3>站内提醒</h3>
-      <label>作用范围<select aria-label="提醒作用范围" value={scope} onChange={event => setScope(event.target.value as "TOKEN" | "GLOBAL")}><option value="TOKEN">仅当前代币</option><option value="GLOBAL">全部 BSC 代币（全局）</option></select></label>
+      <label>作用范围<select aria-label="提醒作用范围" disabled={!access.canWrite} value={scope} onChange={event => setScope(event.target.value as "TOKEN" | "GLOBAL")}><option value="TOKEN">仅当前代币</option><option value="GLOBAL">全部 BSC 代币（全局）</option></select></label>
       <p className="workflow-scope">{scope === "TOKEN" ? `仅匹配当前合约：${token}` : "全局规则会匹配所有 BSC 代币。"}</p>
-      <label>聪明钱评分至少<input aria-label="提醒评分" type="number" min="0" max="100" step="any" value={threshold} onChange={event => setThreshold(event.target.value)} /></label>
+      <label>聪明钱评分至少<input aria-label="提醒评分" disabled={!access.canWrite} type="number" min="0" max="100" step="any" value={threshold} onChange={event => setThreshold(event.target.value)} /></label>
       {!validScore && <p role="alert">请输入 0 到 100 的有限评分。</p>}
-      <button type="button" disabled={alertBusy || !validScore || alertResult?.signature === alertSignature} onClick={() => void createAlert()}>{alertBusy ? "创建中…" : "创建提醒规则"}</button>
+      <button type="button" disabled={!access.canWrite || alertBusy || !validScore || alertResult?.signature === alertSignature} onClick={() => void createAlert()}>{alertBusy ? "创建中…" : "创建提醒规则"}</button>
       {alertResult && <p role={alertResult.failed ? "alert" : "status"}>{alertResult.message}</p>}
       <p className="workflow-scope">提醒在站内事件流展示，不执行交易。</p>
     </div>

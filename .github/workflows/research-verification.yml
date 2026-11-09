@@ -17,8 +17,10 @@ env:
   ENABLE_LIVE_TRADING: 'false'
   PYTHONUTF8: '1'
   PYTHONHASHSEED: '0'
-  BSC_RPC_ENDPOINTS: ''
-  BSC_WS_ENDPOINTS: ''
+  BSC_RPC_URL: ''
+  BSC_RPC_URLS: ''
+  BSC_WS_URL: ''
+  BSC_WS_URLS: ''
   REDIS_URL: redis://127.0.0.1:1/0
 
 jobs:
@@ -148,6 +150,8 @@ jobs:
           python scripts/lock_dependencies.py check
           python -m pip install --require-hashes --only-binary=:all: -r requirements/runtime.lock
           python -m pip wheel --no-deps --no-build-isolation --wheel-dir dist .
+          python -m pip install --no-deps dist/*.whl
+          python -m pip check
           python scripts/build_release.py --output "${{ runner.temp }}/smms-release"
       - name: Build pinned runtime and web images without publishing
         run: |
@@ -156,23 +160,50 @@ jobs:
       - name: Verify installed wheel resources and runtime inputs
         run: |
           docker run --rm --workdir /tmp smms-runtime:ci python -c "import smms; from pathlib import Path; p=Path(smms.__file__).parent; assert (p/'api/static/index.html').is_file(); a=p/'db/migrations/versions'; b=Path('/app/src/smms/db/migrations/versions'); assert {f.name:f.read_bytes() for f in a.glob('*.py')} == {f.name:f.read_bytes() for f in b.glob('*.py')}; assert (Path('/app/configs/scoring.yaml')).is_file(); assert (Path('/app/web/dist/index.html')).is_file()"
-      - name: Smoke API and web images on an owned network
+      - name: Check private Compose defaults and authenticated API through web
         shell: bash
         run: |
           network="smms-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           api="${network}-api"
           web="${network}-web"
-          docker network create "$network"
+          export SMMS_SMOKE_DIR="$(mktemp -d "${RUNNER_TEMP}/smms-ci.XXXXXXXX")"
           cleanup() {
             docker rm --force "$web" "$api" >/dev/null 2>&1 || true
             docker network rm "$network" >/dev/null 2>&1 || true
+            rm -f -- "$SMMS_SMOKE_DIR/.env" "$SMMS_SMOKE_DIR/compose.yml"
+            rmdir -- "$SMMS_SMOKE_DIR"
           }
           trap cleanup EXIT
-          docker run --detach --network "$network" --network-alias api --name "$api" -e REDIS_URL=redis://127.0.0.1:1/0 smms-runtime:ci
+          python scripts/init_local_env.py --output "$SMMS_SMOKE_DIR/.env"
+          python - <<'PY'
+          import json, os, shutil, subprocess
+          from pathlib import Path
+          from smms.config.settings import Settings
+          from sqlalchemy.engine import make_url
+          root = Path(os.environ['SMMS_SMOKE_DIR'])
+          shutil.copy2('docker-compose.yml', root/'compose.yml')
+          result = subprocess.run(['docker', 'compose', '--project-directory', str(root), '--env-file', str(root/'.env'),
+                                   '--project-name', 'smms-ci-boundary', '-f', str(root/'compose.yml'), 'config', '--format', 'json'],
+                                  capture_output=True, text=True, check=True)
+          services = json.loads(result.stdout)['services']
+          assert not services['postgres'].get('ports') and not services['redis'].get('ports')
+          for name in ('api', 'web'):
+              assert services[name]['ports'] and all(p.get('host_ip') == '127.0.0.1' for p in services[name]['ports'])
+          for name, service in services.items():
+              if service.get('build', {}).get('target') == 'runtime':
+                  settings = Settings(_env_file=None, **service['environment'])
+                  assert make_url(settings.database_url).host == 'postgres'
+                  assert (settings.analyst_key is not None) == (name == 'api')
+          print('Rendered Compose boundaries verified; credentials withheld.')
+          PY
+          docker network create "$network"
+          docker run --detach --network "$network" --network-alias api --name "$api" --env-file "$SMMS_SMOKE_DIR/.env" -e REDIS_URL=redis://127.0.0.1:1/0 smms-runtime:ci
           docker run --detach --network "$network" --name "$web" -p 127.0.0.1:18080:80 smms-web:ci
           python - <<'PY'
-          import time
-          from urllib.request import urlopen
+          import json, os, time
+          from pathlib import Path
+          from urllib.request import Request, urlopen
+          from urllib.error import HTTPError
           for attempt in range(40):
               try:
                   with urlopen('http://127.0.0.1:18080/', timeout=2) as response:
@@ -184,6 +215,28 @@ jobs:
                   if attempt == 39:
                       raise
                   time.sleep(.5)
+          values = dict(line.split('=', 1) for line in (Path(os.environ['SMMS_SMOKE_DIR'])/'.env').read_text().splitlines()
+                        if line.strip() and not line.lstrip().startswith('#'))
+          credential = values['SMMS_ANALYST_KEY']
+          def access(headers=None):
+              with urlopen(Request('http://127.0.0.1:18080/api/radar/access', headers=headers or {}), timeout=3) as response:
+                  assert response.headers['Cache-Control'] == 'no-store'
+                  return json.load(response)
+          assert access() == {'enabled': True, 'authorized': False}
+          assert access({'Authorization': 'Bearer '+credential}) == {'enabled': True, 'authorized': True}
+          for supplied, expected in ((None, 401), ('incorrect', 401), (credential, 400)):
+              headers = {'Content-Type': 'application/json'}
+              if supplied is not None:
+                  headers['Authorization'] = 'Bearer '+supplied
+              request = Request('http://127.0.0.1:18080/api/radar/annotations/bsc/not-an-address',
+                                data=json.dumps({'expected_revision': 0}).encode(), method='PUT', headers=headers)
+              try:
+                  urlopen(request, timeout=3)
+                  raise AssertionError('Invalid request unexpectedly succeeded')
+              except HTTPError as error:
+                  assert error.code == expected
+                  assert credential not in error.read().decode()
+          print('Authenticated web/API boundary verified without database writes.')
           PY
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:

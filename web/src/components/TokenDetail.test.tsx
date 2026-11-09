@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { api, ApiError } from "../api/client";
+import { analystSession } from "../api/analyst-session";
 import type { Candidate } from "../types/radar";
 import { TokenDetail } from "./TokenDetail";
 
@@ -14,6 +15,9 @@ let host: HTMLDivElement;
 let root: Root;
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  const version = analystSession.begin();
+  analystSession.accept("synthetic-detail-credential-" + "a".repeat(32), version);
+  vi.spyOn(api, "analystAccess").mockResolvedValue({ enabled: true, authorized: true });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
   vi.spyOn(api, "candidate").mockResolvedValue(candidate);
   vi.spyOn(api, "earlyBuyers").mockResolvedValue({ early_buyers: [] });
@@ -21,7 +25,7 @@ beforeEach(() => {
   vi.spyOn(api, "risk").mockResolvedValue({ risk: null });
   vi.spyOn(api, "annotation").mockResolvedValue({ revision: 1 });
 });
-afterEach(async () => { await act(() => root.unmount()); host.remove(); vi.restoreAllMocks(); });
+afterEach(async () => { await act(() => root.unmount()); host.remove(); api.lockAnalyst(); vi.restoreAllMocks(); });
 
 it("polls research while preserving the focused draft and marks failed refresh stale", async () => {
   vi.useFakeTimers();

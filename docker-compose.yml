@@ -1,5 +1,10 @@
 x-runtime-env: &runtime-env
-  DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/smms
+  DATABASE_HOST: postgres
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: smms
+  DATABASE_USER: postgres
+  DATABASE_PASSWORD: ${SMMS_POSTGRES_PASSWORD:?Generate a private .env with scripts/init_local_env.py}
+  SMMS_ANALYST_KEY: ""
   REDIS_URL: redis://redis:6379/0
   ENABLE_LIVE_TRADING: "false"
 
@@ -11,14 +16,16 @@ services:
     env_file:
       - path: .env
         required: false
-    environment: *runtime-env
+    environment:
+      <<: *runtime-env
+      SMMS_ANALYST_KEY: ${SMMS_ANALYST_KEY:-}
     depends_on:
       db-migrate:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     command: ["uvicorn", "smms.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
 
   bsc-ingestion:
@@ -148,16 +155,14 @@ services:
     depends_on:
       - api
     ports:
-      - "8080:80"
+      - "127.0.0.1:8080:80"
 
   postgres:
     image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
     environment:
       POSTGRES_DB: smms
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "5432:5432"
+      POSTGRES_PASSWORD: ${SMMS_POSTGRES_PASSWORD:?Generate a private .env with scripts/init_local_env.py}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -173,8 +178,7 @@ services:
     env_file:
       - path: .env
         required: false
-    environment:
-      DATABASE_URL: postgresql+psycopg2://postgres:postgres@postgres:5432/smms
+    environment: *runtime-env
     depends_on:
       postgres:
         condition: service_healthy
@@ -182,8 +186,6 @@ services:
 
   redis:
     image: redis:7-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
-    ports:
-      - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:

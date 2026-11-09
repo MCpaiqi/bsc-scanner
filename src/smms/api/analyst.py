@@ -4,10 +4,11 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
+from smms.api.access import access_status, analyst_write_access
 from smms.chains.constants import normalize_bsc_address, validate_bsc_chain
 from smms.config.settings import get_settings
 from smms.db.database import session_scope
@@ -16,13 +17,15 @@ from smms.radar.alerts import (
     InvalidRuleError,
     create_rule,
     evaluate_and_notify,
+    validate_conditions,
     validate_rule_payload,
 )
 from smms.radar.annotations import AnnotationConflict, active_annotation, save_annotation
 from smms.radar.annotations import delete_annotation as remove_annotation
 from smms.radar.hooks import enqueue_alert
 
-router = APIRouter(prefix="/api/radar", tags=["analyst-workflow"])
+router = APIRouter(prefix="/api/radar", tags=["analyst-workflow"], dependencies=[Depends(analyst_write_access)])
+router.add_api_route("/access", access_status, methods=["GET"])
 
 
 def _chain(value: str | None) -> str:
@@ -104,8 +107,14 @@ def _annotation_payload(row: RadarAnnotation) -> dict[str, Any]:
 
 
 def _rule_payload(row: AlertRule) -> dict[str, Any]:
+    try:
+        validate_conditions(row.conditions_json, match_mode=row.match_mode)
+        validation = "VALID"
+    except InvalidRuleError:
+        validation = "INVALID"
     return {
         "id": row.id,
+        "validation_status": validation,
         "name": row.name,
         "scope": row.scope,
         "token_address": row.token_address,

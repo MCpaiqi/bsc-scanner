@@ -7,7 +7,7 @@ from smms.config import get_settings
 from smms.db.models import Base
 
 config = context.config
-config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("+asyncpg", ""))
+config.set_main_option("sqlalchemy.url", get_settings().database_url.replace("+asyncpg", "").replace("%", "%%"))
 
 if config.config_file_name is not None:
     # Migration tests and long-running workers may already own named loggers.

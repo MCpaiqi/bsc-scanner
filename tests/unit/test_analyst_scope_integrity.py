@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from test_alpha_collector import coverage_session as _coverage_session
 from test_research_integrity import research_session as _research_session
 
+from smms.config.settings import Settings, get_settings
 from smms.db.models import AlertHistory, AlertRule, RadarAnnotation
 from smms.radar.alerts import (
     InvalidRuleError,
@@ -24,6 +25,7 @@ coverage_session = _coverage_session
 TOKEN = "0x" + "a1" * 20
 OTHER = "0x" + "2" * 40
 NOW = datetime(2026, 11, 7, tzinfo=UTC)
+AUTH_KEY = "synthetic-business-analyst-" + "a" * 32
 
 
 def payload(**kwargs):
@@ -79,9 +81,10 @@ async def test_http_annotations_require_revision_and_reject_stale_changes(covera
         yield coverage_session
     monkeypatch.setattr(analyst, "session_scope", scope)
     app = FastAPI()
+    app.dependency_overrides[get_settings] = lambda: Settings(_env_file=None, SMMS_ANALYST_KEY=AUTH_KEY)
     app.include_router(analyst.router)
     path = f"/api/radar/annotations/bsc/{TOKEN}"
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers={"Authorization": "Bearer " + AUTH_KEY}) as client:
         assert (await client.get(path)).status_code == 404
         assert (await client.put(path, json={"note": "unsafe"})).status_code == 428
         created = await client.put(path, json={"expected_revision": 0, "note": "saved", "favorite": True})
@@ -112,8 +115,9 @@ async def test_http_rule_create_update_and_read_expose_scope(coverage_session, m
         yield coverage_session
     monkeypatch.setattr(analyst, "session_scope", scope)
     app = FastAPI()
+    app.dependency_overrides[get_settings] = lambda: Settings(_env_file=None, SMMS_ANALYST_KEY=AUTH_KEY)
     app.include_router(analyst.router)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers={"Authorization": "Bearer " + AUTH_KEY}) as client:
         response = await client.post("/api/radar/alert-rules", json=payload(scope="TOKEN", token_address=TOKEN, request_id=str(uuid4())))
         assert response.status_code == 201
         rule = response.json()
@@ -134,9 +138,10 @@ async def test_deleted_rule_request_cannot_resurrect_or_expand_scope(coverage_se
         yield coverage_session
     monkeypatch.setattr(analyst, "session_scope", scope)
     app = FastAPI()
+    app.dependency_overrides[get_settings] = lambda: Settings(_env_file=None, SMMS_ANALYST_KEY=AUTH_KEY)
     app.include_router(analyst.router)
     data = payload(scope="TOKEN", token_address=TOKEN, request_id=str(uuid4()))
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers={"Authorization": "Bearer " + AUTH_KEY}) as client:
         created = await client.post("/api/radar/alert-rules", json=data)
         rule_id = created.json()["id"]
         path = f"/api/radar/alert-rules/{rule_id}"
@@ -206,9 +211,10 @@ async def test_rule_patch_preserves_omitted_scope_and_requires_explicit_global(c
         yield coverage_session
     monkeypatch.setattr(analyst, "session_scope", scope)
     app = FastAPI()
+    app.dependency_overrides[get_settings] = lambda: Settings(_env_file=None, SMMS_ANALYST_KEY=AUTH_KEY)
     app.include_router(analyst.router)
     data = payload(scope="TOKEN", token_address=TOKEN, request_id=str(uuid4()))
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers={"Authorization": "Bearer " + AUTH_KEY}) as client:
         created = (await client.post("/api/radar/alert-rules", json=data)).json()
         path = f"/api/radar/alert-rules/{created['id']}"
         renamed = await client.patch(path, json=payload(name="rename without scope"))

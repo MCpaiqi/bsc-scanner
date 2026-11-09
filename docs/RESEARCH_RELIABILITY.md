@@ -1100,3 +1100,53 @@ separate gate; schema creation inside regressions does not prove migration parit
   [skip ci] after local lock/whitespace/source-build/audit checks; the successful
   remote execution claim refers specifically to the code SHA above. No claim is
   made that the documentation commit itself executed another CI run.
+
+
+## Private deployment and analyst authorization (2026-11-10, CI pending)
+
+- Compose API/Web bind127.0.0.1; PostgreSQL/Redis have no host-published ports.
+  Database credentials are explicitly required; new stdlib bootstrap generates
+  independent random secrets with exclusive0600creation and refuses existing
+  files/symlinks. Existing local.env, data, volumes and untracked artifacts were
+  not changed. Structured database URLs escape special characters and Alembic
+  percent signs; DB/auth settings are excluded from repr/model dumps and input
+  errors. Analyst key reaches only API, not workers/migrations. See
+  [setup and existing-volume rotation](DEPLOYMENT_ACCESS.md).
+- All analyst router mutations require one valid Bearer header before opening
+  a database session; no configured key means503read-only, invalid/missing
+  credentials401. Query/Cookie/malformed/duplicate/non-ASCII headers do not grant
+  writes. Public access status contains only booleans/no-store. Public research
+  reads and non-persisting wallet replay stay available within private access.
+- React uses current-page memory only, no credential storage/URL/SSE/public-GET
+  propagation. Unlock/lock/read-only/error states are explicit; rejected writes
+  retain drafts and do not auto-retry. Remote HTTP credential transmission is
+  refused. Synthetic browser QA saved a note/created a rule, retained a locked
+  draft, and verified refresh clears authorization while saved notes persist.
+  No live provider, user database or production credential operation was used.
+- Original R13's condition-operand requirement is retained: numeric/risk operands
+  are typed, finite and domain-checked. Invalid create/patch returns422 without
+  replacing rules. Incompatible legacy rules stay retained/visible as INVALID,
+  return INVALID_RULE and do not interrupt subsequent valid rules. Partial
+  notification snapshots serialize Decimal and invalid observations safely,
+  preserving missing values rather than inventing0. Manual evaluation provenance
+  remains R3, independent of authorization/type safety.
+- One fresh read-only review found0Critical/2Important/1Minor. CI's host Settings
+  import after pip wheel failed RED in a runtime-only venv; installing the built
+  wheel --no-deps before host checks is GREEN. The condition gap and Decimal/NaN
+  persistence error were reproduced RED then fixed. One Minor remains: a late
+  older401 can make rendered recovery abort a concurrent replacement unlock,
+  requiring key re-entry, without data loss/authorization bypass. No second review.
+- Final local full Windows runner **944passed65skipped14warnings**; real
+  PostgreSQL/Redis Linux runner **1006passed3skipped15warnings**; both exit0 with
+  Ruff. Linux skips are Windows-readonly-fixture plus2unavailable local Compose
+  plugin checks; rendered Compose checks passed via the Windows CLI and are
+  mandatory again in the CI artifact job. Frontend **87tests**, typecheck/build
+  passed on clean Windows/Linux. Reviewed wheel imports/pipcheck outside source
+  and audited source build passed. Default-settings test now isolates declared
+  defaults from explicit empty CI provider aliases; a separate blank-provider
+  test proves no endpoint is configured. A mistyped driver in one verification
+  launch was corrected; that launch is excluded from authoritative pass claims.
+- CI uses the actual BSC URL(S) settings, installs its built first-party wheel,
+  requires rendered Compose boundaries and authenticated API through the web
+  image using an ephemeral unprinted key. Exact pushed-SHA execution is still
+  pending. R13 is not certified yet; R3/R11/R14 remain OPEN under the full goal.

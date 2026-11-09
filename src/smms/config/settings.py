@@ -1,8 +1,10 @@
+import re
 from functools import lru_cache
 from typing import Literal
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import URL
 
 from smms.chains.constants import BSC_CHAIN_ID, DEFAULT_CHAIN
 from smms.radar.config import RadarConfig
@@ -11,15 +13,23 @@ from smms.radar.config import RadarConfig
 class Settings(BaseSettings):
     """Environment-backed application settings with paper-first safety defaults."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore",
+                                     hide_input_in_errors=True)
 
     radar: RadarConfig = Field(default_factory=RadarConfig, alias="RADAR_CONFIG")
 
     app_env: str = Field("development", alias="APP_ENV")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     database_url: str = Field(
-        "postgresql+asyncpg://postgres:postgres@localhost:5432/smms", alias="DATABASE_URL"
+        "postgresql+asyncpg://postgres@127.0.0.1:5432/smms", alias="DATABASE_URL", repr=False, exclude=True
     )
+    database_host: str | None = Field(None, alias="DATABASE_HOST")
+    database_port: int = Field(5432, alias="DATABASE_PORT", ge=1, le=65535)
+    database_name: str = Field("smms", alias="DATABASE_NAME", min_length=1)
+    database_user: str = Field("postgres", alias="DATABASE_USER", min_length=1)
+    database_password: SecretStr | None = Field(None,
+        validation_alias=AliasChoices("DATABASE_PASSWORD", "SMMS_POSTGRES_PASSWORD"), repr=False, exclude=True)
+    analyst_key: SecretStr | None = Field(None, alias="SMMS_ANALYST_KEY", repr=False, exclude=True)
     redis_url: str = Field("redis://localhost:6379/0", alias="REDIS_URL")
     bsc_rpc_url: str | None = Field(None, alias="BSC_RPC_URL")
     bsc_rpc_urls: str | None = Field(None, alias="BSC_RPC_URLS")
@@ -145,8 +155,27 @@ class Settings(BaseSettings):
     def normalize_mode(cls, value: str) -> str:
         return str(value).upper()
 
+    @field_validator("analyst_key", mode="before")
+    @classmethod
+    def empty_analyst_key(cls, value):
+        return None if value is None or value == "" else value
+
+    @field_validator("analyst_key")
+    @classmethod
+    def validate_analyst_key(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", value.get_secret_value()):
+            raise ValueError("SMMS_ANALYST_KEY must contain32..256 URL-safe ASCII characters")
+        return value
+
     @model_validator(mode="after")
     def enforce_live_safety(self) -> "Settings":
+        if self.database_host is not None:
+            if not self.database_host.strip() or self.database_password is None or not self.database_password.get_secret_value():
+                raise ValueError("Structured database configuration requires a host and password")
+            self.database_url = URL.create("postgresql+asyncpg", username=self.database_user,
+                password=self.database_password.get_secret_value(), host=self.database_host,
+                # Driver connections need credentials; this field is excluded from repr/dumps.
+                port=self.database_port, database=self.database_name).render_as_string(False)
         if self.bsc_chain_id != BSC_CHAIN_ID:
             raise ValueError(f"BSC_CHAIN_ID must be {BSC_CHAIN_ID}")
         if self.trading_mode == "LIVE" and not (self.enable_live_trading and self.live_confirmation):

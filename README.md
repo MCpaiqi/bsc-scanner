@@ -14,17 +14,17 @@ python -m venv .venv
 python scripts/lock_dependencies.py check
 python -m pip install --require-hashes --only-binary=:all: -r requirements/dev.lock
 python -m pip install --no-deps --no-build-isolation -e .
-Copy-Item .env.example .env
+python scripts/init_local_env.py
 docker compose up --build
 ```
 
-启动 Web 情报台与 API：
+初始化命令只创建新的 `.env`，为 PostgreSQL 和分析员写入分别生成随机密钥；已有 `.env` 会拒绝覆盖。
+已有部署先按 [访问与凭据迁移说明](docs/DEPLOYMENT_ACCESS.md) 更新配置和轮换数据库密码，保留原数据卷。
 
-```powershell
-uvicorn smms.api.app:app --reload
-```
-
-打开 `http://127.0.0.1:8080/` 即可使用 React Trader Workstation。`/` 默认是工作台，旧版静态页面仅保留在 `/legacy`。标准 Compose 拓扑会同时启动 API、Web、BSC ingestion、Radar audit、Forward outcome、Alpha coverage 和研究快照重建 workers，以及 PostgreSQL、Redis。
+Compose 启动后打开 `http://127.0.0.1:8080/` 使用 React 工作台；API 在 `http://127.0.0.1:8000/`，
+旧版静态页面保留在 `/legacy`。API/Web 默认只绑定本机，PostgreSQL/Redis 不发布主机端口。
+行情和研究可直接浏览；保存备注、收藏及提醒需要在代币详情中用分析员访问密钥解锁，刷新页面后重新解锁。
+标准拓扑包含 ingestion/live-tail、Radar、event relay、Forward、Alpha coverage、研究重建、迁移、API/Web、PostgreSQL 和 Redis。
 
 当前服务启动前需完成 `20261109_0046` 迁移。Alpha coverage worker 使用确认后的 HTTP 区块扫描证明数据覆盖；缺证据的目标结果保持 UNKNOWN。当前评分版本为 `experimental-v4`，详见 [覆盖与恢复口径](docs/ALPHA_COVERAGE.md)。失效的 Alpha 输入会保留历史并自动创建替代修订，可查询 [来源和重建记录](docs/ALPHA_RECONSTRUCTION.md)。市场、风险、钱包/Token 聪明钱、早期买家、持仓、Radar、Signal 和物化历史数据集会隐藏失效版本并在后台生成新修订；历史提取已升级为 `dataset-v5`，详见 [派生研究来源与恢复](docs/DERIVED_RESEARCH.md)。
 

@@ -305,6 +305,13 @@ td small { display: block; color: var(--faint); font-size: 10px; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
 
 .analyst-workflow { padding: 0 22px 22px; display: grid; gap: 16px; }
+.analyst-access { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+.analyst-access h3, .analyst-access p { width: 100%; margin: 0; }
+.analyst-access p { color: var(--muted); line-height: 1.5; }
+.analyst-access form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; width: 100%; }
+.analyst-access label { display: grid; gap: 6px; flex: 1 1 180px; }
+.analyst-access input { width: 100%; min-height: 44px; }
+.analyst-access button { min-height: 44px; }
 .workflow .workflow-scope { width: 100%; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .workflow .workflow-wide { display: grid; gap: 6px; width: 100%; }
 .workflow .workflow-wide input { width: 100%; }

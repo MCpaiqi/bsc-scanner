@@ -26,33 +26,64 @@ ALLOWED_FIELDS = {
 }
 ALLOWED_OPERATORS = {"==", "!=", ">", ">=", "<", "<=", "in"}
 ALLOWED_CHANNELS = {"in-app", "browser", "webhook"}
+RISK_LEVELS = {"LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"}
 
 
 class InvalidRuleError(ValueError):
     pass
 
 
+def _number(value: Any, field: str, *, observation: bool = False) -> Decimal | None:
+    types = (int, float, Decimal, str) if observation else (int, float)
+    if isinstance(value, bool) or not isinstance(value, types):
+        return None
+    try:
+        number = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    if not number.is_finite() or number < 0:
+        return None
+    if field == "smart_money_score" and number > 100:
+        return None
+    if field == "smart_wallet_count" and number != number.to_integral_value():
+        return None
+    return number
+
+
+def _operand(value: Any, field: str) -> Any:
+    if field == "risk":
+        if not isinstance(value, str) or value not in RISK_LEVELS:
+            raise InvalidRuleError("risk operands must be known risk levels")
+    elif _number(value, field) is None:
+        raise InvalidRuleError("numeric operands must be finite nonnegative JSON numbers; score <=100 and wallet count integral")
+    return value
+
+
 def _condition_parts(condition: Mapping[str, Any]) -> tuple[str, str, Any]:
     field = condition.get("field")
     operator = condition.get("operator", condition.get("op"))
-    if field not in ALLOWED_FIELDS:
-        raise InvalidRuleError(f"UNKNOWN field: {field}")
-    if operator not in ALLOWED_OPERATORS:
-        raise InvalidRuleError(f"invalid operator: {operator}")
+    if not isinstance(field, str) or field not in ALLOWED_FIELDS:
+        raise InvalidRuleError("UNKNOWN field")
+    if not isinstance(operator, str) or operator not in ALLOWED_OPERATORS:
+        raise InvalidRuleError("invalid operator")
+    if field == "risk" and operator not in {"==", "!=", "in"}:
+        raise InvalidRuleError("risk only supports equality and membership operators")
     if "value" not in condition:
         raise InvalidRuleError("condition value is required")
     value = condition["value"]
     if operator == "in" and not isinstance(value, (list, tuple, set)):
         raise InvalidRuleError("in operator requires a list value")
     if operator == "in":
-        value = list(value)
+        value = [_operand(item, field) for item in value]
+    else:
+        value = _operand(value, field)
     return field, str(operator), value
 
 
 def validate_conditions(conditions: Any, *, match_mode: str = "all") -> list[dict[str, Any]]:
     if not isinstance(conditions, list) or not conditions:
         raise InvalidRuleError("at least one condition is required")
-    if match_mode not in {"all", "any"}:
+    if not isinstance(match_mode, str) or match_mode not in {"all", "any"}:
         raise InvalidRuleError("match_mode must be all or any")
     normalized: list[dict[str, Any]] = []
     for item in conditions:
@@ -64,6 +95,8 @@ def validate_conditions(conditions: Any, *, match_mode: str = "all") -> list[dic
 
 
 def _state_value(state: Mapping[str, Any], field: str) -> Any:
+    if not isinstance(state, Mapping):
+        return None
     aliases = {
         "risk": ("risk", "overall_risk"),
         "liquidity": ("liquidity", "current_liquidity"),
@@ -76,16 +109,20 @@ def _state_value(state: Mapping[str, Any], field: str) -> Any:
     return None
 
 
-def _compare(actual: Any, operator: str, expected: Any) -> bool:
+def _compare(field: str, actual: Any, operator: str, expected: Any) -> bool:
     if actual is None or actual == "UNKNOWN":
         return False
+    if field == "risk":
+        if not isinstance(actual, str) or actual not in RISK_LEVELS:
+            return False
+    else:
+        actual = _number(actual, field, observation=True)
+        if actual is None:
+            return False
+        expected = ([_number(item, field) for item in expected] if operator == "in"
+                    else _number(expected, field))
     if operator == "in":
         return actual in expected
-    if isinstance(expected, (int, float, Decimal)) and not isinstance(expected, bool):
-        try:
-            actual, expected = Decimal(str(actual)), Decimal(str(expected))
-        except (InvalidOperation, ValueError):
-            return False
     if operator == "==":
         return actual == expected
     if operator == "!=":
@@ -104,7 +141,7 @@ def evaluate_conditions(
 ) -> bool:
     normalized = validate_conditions(conditions, match_mode=match_mode)
     results = [
-        _compare(_state_value(state, item["field"]), item["operator"], item["value"])
+        _compare(item["field"], _state_value(state, item["field"]), item["operator"], item["value"])
         for item in normalized
     ]
     return all(results) if match_mode == "all" else any(results)
@@ -130,10 +167,19 @@ def state_key(
     rule: AlertRule | Mapping[str, Any], state: Mapping[str, Any]
 ) -> tuple[str, dict[str, Any]]:
     conditions, mode = _rule_conditions(rule)
+    def snapshot_value(field):
+        value = _state_value(state, field)
+        if value is None or value == "UNKNOWN":
+            return value
+        valid = (isinstance(value, str) and value in RISK_LEVELS if field == "risk"
+                 else _number(value, field, observation=True) is not None)
+        if not valid:
+            return None
+        return str(value) if isinstance(value, Decimal) else value
     relevant = {
         "mode": mode,
         "matched": evaluate_conditions(conditions, state, match_mode=mode),
-        "values": {item["field"]: _state_value(state, item["field"]) for item in conditions},
+        "values": {item["field"]: snapshot_value(item["field"]) for item in conditions},
     }
     encoded = json.dumps(relevant, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(encoded.encode()).hexdigest(), relevant
@@ -262,7 +308,11 @@ def evaluate_and_notify(
     token_address = token_address.lower() if chain == "bsc" else token_address
     if rule.token_address is not None and rule.token_address != token_address:
         return {"matched": False, "notified": False, "reason": "OUT_OF_SCOPE"}
-    matched = evaluate_rule(rule, state)
+    try:
+        matched = evaluate_rule(rule, state)
+    except InvalidRuleError:
+        # Retain incompatible legacy rules for repair, without stopping other rules.
+        return {"matched": False, "notified": False, "reason": "INVALID_RULE"}
     if not matched:
         return {"matched": False, "notified": False, "reason": "NO_MATCH"}
     key, snapshot = state_key(rule, state)

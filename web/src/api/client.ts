@@ -1,7 +1,37 @@
 import type { AlphaCandidateDetail, AlphaResponse, AlphaStats, CandidateResponse, DetailPayload, EarlyBuyer, HealthSnapshot, Candidate, RadarEvent, LivePerformance } from "../types/radar";
+import { analystSession } from "./analyst-session";
 
 export class ApiError extends Error {
-  constructor(readonly status: number, readonly dataStatus?: string) { super(`HTTP ${status}`); }
+  constructor(readonly status: number, readonly dataStatus?: string, readonly code?: string) { super(`HTTP ${status}`); }
+}
+
+export type AnalystAccessState = { enabled: boolean; authorized: boolean };
+
+function analystHeaders(credential: string): Record<string, string> {
+  const location = globalThis.location;
+  if (!location || location.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) {
+    throw new ApiError(0, undefined, "ANALYST_INSECURE_TRANSPORT");
+  }
+  return { Authorization: `Bearer ${credential}` };
+}
+
+async function analystAccess(candidate?: string, signal?: AbortSignal): Promise<AnalystAccessState> {
+  const version = candidate === undefined ? analystSession.generation() : analystSession.begin();
+  const credential = candidate ?? analystSession.credential();
+  const response = await fetch("/api/radar/access", { signal, cache: "no-store", credentials: "omit", redirect: "error",
+    headers: { Accept: "application/json", ...(credential ? analystHeaders(credential) : {}) } });
+  if (!response.ok) throw new ApiError(response.status);
+  const result: unknown = await response.json();
+  if (!result || typeof result !== "object" || !("enabled" in result) || !("authorized" in result) ||
+      typeof result.enabled !== "boolean" || typeof result.authorized !== "boolean") {
+    throw new ApiError(0, undefined, "ANALYST_STATUS_INVALID");
+  }
+  const valid = result.enabled && result.authorized && credential !== null && !signal?.aborted;
+  const authorized = candidate !== undefined
+    ? valid && analystSession.accept(candidate, version)
+    : valid && analystSession.generation() === version && analystSession.snapshot();
+  if (!authorized) analystSession.clear(version);
+  return { enabled: result.enabled, authorized };
 }
 
 async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
@@ -14,15 +44,22 @@ async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
 }
 
 async function write<T>(path: string, method: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(path, { method, headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body), signal });
+  const credential = analystSession.credential();
+  const version = analystSession.generation();
+  if (credential === null) throw new ApiError(401, undefined, "ANALYST_UNAUTHORIZED");
+  const response = await fetch(path, { method, headers: { "Content-Type": "application/json", Accept: "application/json", ...analystHeaders(credential) },
+    body: JSON.stringify(body), signal, credentials: "omit", redirect: "error" });
   if (!response.ok) {
     const data = await response.json().catch(() => null);
-    throw new ApiError(response.status, data?.detail?.data_status);
+    if (response.status === 401 || data?.detail?.code === "ANALYST_READ_ONLY") analystSession.clear(version);
+    throw new ApiError(response.status, data?.detail?.data_status, data?.detail?.code);
   }
   return response.json() as Promise<T>;
 }
 
 export const api = {
+  analystAccess,
+  lockAnalyst: () => analystSession.clear(),
   candidates: (params: URLSearchParams, signal?: AbortSignal) => get<CandidateResponse>(`/api/radar/candidates?${params}`, signal),
   candidate: (chain: string, token: string, signal?: AbortSignal) => get<Candidate>(`/api/radar/candidates/${encodeURIComponent(chain)}/${encodeURIComponent(token)}`, signal),
   earlyBuyers: (token: string, signal?: AbortSignal) => get<{ early_buyers?: EarlyBuyer[]; data_status?: string }>(`/api/radar/tokens/${encodeURIComponent(token)}/early-buyers`, signal),
