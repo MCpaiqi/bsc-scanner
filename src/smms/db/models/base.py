@@ -22,11 +22,15 @@ def _research_visibility(execute_state):
 
 @event.listens_for(Session, "before_flush")
 def _immutable_research_inputs(session, _context, _instances):
+    from .alpha import CanonicalAnchorSegment
     from .entities import BacktestDataset, BacktestDatasetRow
     from .live import LiveSignalObservation, LiveSignalOutcome
     from .outbox import ENVELOPE_FIELDS, RadarEventOutbox
     from .research import SnapshotLineageMixin
     from .runtime import EvidenceObservationRecord
+
+    if any(isinstance(row, CanonicalAnchorSegment) for row in session.deleted):
+        raise ValueError("canonical anchor archive revisions are immutable")
 
     if any(isinstance(row, (BacktestDataset, BacktestDatasetRow, LiveSignalObservation, LiveSignalOutcome)) for row in session.deleted):
         raise ValueError("published dataset artifacts are immutable; retain audit history")
@@ -36,7 +40,7 @@ def _immutable_research_inputs(session, _context, _instances):
             inspect(row).attrs[name].history.has_changes() for name in ENVELOPE_FIELDS
         ):
             raise ValueError("committed event envelopes are immutable")
-        if isinstance(row, (EvidenceObservationRecord, BacktestDatasetRow)) and session.is_modified(row, include_collections=False):
+        if isinstance(row, (EvidenceObservationRecord, BacktestDatasetRow, CanonicalAnchorSegment)) and session.is_modified(row, include_collections=False):
             raise ValueError("stored evidence observations are immutable; append a new observation")
         if isinstance(row, SnapshotLineageMixin):
             state = inspect(row)

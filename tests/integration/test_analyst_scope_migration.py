@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from migration_head import CURRENT_HEAD
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session
 
@@ -63,7 +64,7 @@ def test_analyst_scope_upgrade_preserves_legacy_and_refuses_lossy_downgrade():
             refused = alembic("downgrade", "20261107_0044")
             assert refused.returncode != 0 and "cannot discard analyst scope/revision metadata" in refused.stderr
             with engine.begin() as connection:
-                assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20261107_0045"
+                assert connection.scalar(text("SELECT version_num FROM alembic_version")) == CURRENT_HEAD
                 assert connection.scalar(text("SELECT note FROM radar_annotations")) == "preserve me"
                 if kind in {"target", "request"}:
                     connection.execute(text("DELETE FROM alert_rules WHERE id=:id"), {"id": new_id})

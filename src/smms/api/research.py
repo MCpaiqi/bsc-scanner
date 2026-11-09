@@ -1,13 +1,14 @@
 """Read-only audit access, separate from trusted current research universes."""
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from smms.config.settings import get_settings
 from smms.db.database import session_scope
 from smms.db.models import (
     BacktestDataset,
     BacktestDatasetRow,
+    CanonicalAnchorSegment,
     ForwardEvaluationJob,
     LiveSignalObservation,
     RadarEventOutbox,
@@ -19,6 +20,41 @@ from smms.research.lineage import row_values
 from smms.research.publication import MODELS
 
 router = APIRouter(prefix="/api/research", tags=["research-audit"])
+
+
+@router.get("/anchor-segments")
+async def anchor_segments(limit: int = Query(50, ge=1, le=200), before_id: int | None = Query(None, ge=1)):
+    model = CanonicalAnchorSegment
+    query = select(*(column for column in model.__table__.columns if column.name != "payload"),
+                   func.length(model.payload).label("compressed_bytes")).where(model.chain_id == 56)
+    if before_id is not None:
+        query = query.where(model.id < before_id)
+    async with session_scope(get_settings()) as session:
+        rows = (await session.execute(query.order_by(model.id.desc()).limit(limit + 1))).mappings().all()
+    return {"audit_only": True, "segments": [dict(row) for row in rows[:limit]],
+            "next_cursor": rows[limit - 1]["id"] if len(rows) > limit else None}
+
+
+@router.get("/anchor-segments/{segment_id}")
+async def anchor_segment(segment_id: int):
+    from smms.alpha.anchors import decode_segment
+
+    async with session_scope(get_settings()) as session:
+        row = await session.scalar(select(CanonicalAnchorSegment).where(CanonicalAnchorSegment.id == segment_id,
+            CanonicalAnchorSegment.chain_id == 56).execution_options(populate_existing=True))
+        if row is None:
+            raise HTTPException(404, "canonical anchor segment not found")
+        latest = await session.scalar(select(func.max(CanonicalAnchorSegment.revision)).where(
+            CanonicalAnchorSegment.chain_id == 56, CanonicalAnchorSegment.bucket_start == row.bucket_start))
+        try:
+            anchors = decode_segment(row)
+        except ValueError as exc:
+            raise HTTPException(503, "canonical anchor archive verification failed") from exc
+        metadata = {column.name: getattr(row, column.name) for column in row.__table__.columns if column.name != "payload"}
+    return {"audit_only": True, "verified": True, "verification": "CHECKSUM_AND_FORMAT",
+            "latest_archive_revision": row.revision == latest, "segment": metadata,
+            "anchors": [{"block_number": value.block_number, "block_hash": value.block_hash,
+                         "observed_at": value.observed_at} for value in anchors.values()]}
 
 
 @router.get("/event-deliveries")

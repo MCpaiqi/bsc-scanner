@@ -77,3 +77,11 @@ while USD fields are `UNKNOWN`.
 延后任务仍需重试，不代表已重建成功。后台心跳在异步等待中更新耗时，终态上报前停止。
 单次数据库锁等待最多250ms，尊重原配置中更短的期限；这不是整条 SQL、CPU 或整批任务的
 运行时限。取消会传播并回滚未提交工作；跨会话健康读取只暴露对应 worker 的白名单字段。
+
+`workers.anchor_archive.research` 诊断与重建 worker 同进程的独立锚点归档循环，阶段为
+`ARCHIVE`、`COMMIT`、`IDLE`。提交后返回 `rows_archived`、`segments_written`、`bucket_start`
+和 `archive_state`（`ARCHIVED`、`IDLE`、`BUSY`），包含归档/提交/总耗时。未提交的归档数量
+和完成状态为 null。审计接口 `/api/research/anchor-segments` 只分页读取元数据；
+`/api/research/anchor-segments/{id}` 验证校验和后读取单段全部已观察高度。它是历史证据，
+`latest_archive_revision` 仅指最新归档版本，不代替热表更正或实时链验证。详见
+[canonical 锚点保留](CANONICAL_ANCHORS.md)。

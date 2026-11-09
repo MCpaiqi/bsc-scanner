@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from migration_head import CURRENT_HEAD
 from sqlalchemy import MetaData, Table, create_engine, select
 from sqlalchemy.orm import Session
 
@@ -81,7 +82,7 @@ def test_legacy_buyers_and_positions_survive_and_rebuild_after_restart():
             assert legacy.current_balance == 999 and legacy.snapshot_status == "SUPERSEDED"
         refused = alembic("downgrade", "20261106_0038")
         assert refused.returncode != 0 and "refusing lossy downgrade" in refused.stderr
-        assert "20261106_0043" in alembic("current").stdout
+        assert CURRENT_HEAD in alembic("current").stdout
     finally:
         engine.dispose()
         try:

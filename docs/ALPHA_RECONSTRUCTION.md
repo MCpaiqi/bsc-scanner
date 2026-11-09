@@ -1,6 +1,6 @@
 # Alpha research revisions and source lineage
 
-Apply Alembic through `20261107_0045` before running the updated services.
+Apply Alembic through `20261109_0046` before running the updated services.
 This extends the [coverage contract](ALPHA_COVERAGE.md) with automatic Alpha
 reconstruction. The full R3 programme also covers other derived snapshots and
 materialized research; those remain open in [the ledger](RESEARCH_RELIABILITY.md).
@@ -80,8 +80,9 @@ Market/risk/intelligence/radar snapshots, early-buyer aggregates, Forward entry
 observations and exported historical datasets still require their full lineage
 and reconstruction work. This Alpha slice does not complete R3. Current due Alpha
 inputs now use batched, window-scoped database reads. Dense-path manifest storage,
-canonical-anchor retention, asynchronous reconstruction throughput and global
-publication-lock latency remain R11 work. Full Compose restart/live-provider
+asynchronous reconstruction throughput and global publication-lock latency remain
+R11 work. Canonical anchors now use [lossless hot/archive storage](CANONICAL_ANCHORS.md).
+Full Compose restart/live-provider
 acceptance remains R14.
 
 

@@ -2,7 +2,7 @@
 
 The live recipe is `experimental-v4`, with labels `alpha-shadow-v3`. Earlier
 scores and labels remain stored under their original versions. Run Alembic
-through `20261107_0045` before starting the updated application or workers.
+through `20261109_0046` before starting the updated application or workers.
 
 `alpha-coverage` is an independent Compose worker. It scans each admitted
 PancakeSwap pair from its creation block through the first 65 minutes using
@@ -55,8 +55,10 @@ are enqueued automatically; see [reconstruction and lineage](ALPHA_RECONSTRUCTIO
 Other derived snapshot reconstruction remains part of the open R3 gate. Transactional
 projection/outbox and bounded SSE recovery are recorded separately in the programme
 ledger. Full Compose restart and real-provider archive availability remain open.
-Canonical anchor/provenance retention, publication-lock latency and asynchronous
-reconstruction throughput remain part of the wider R11 performance gate.
+Canonical anchors now have lossless hot/archive retention; see
+[storage, safety and audit](CANONICAL_ANCHORS.md). Dense provenance storage,
+publication-lock latency and asynchronous reconstruction throughput remain part
+of the wider R11 performance gate.
 An unavailable archive cannot be turned into a completed negative result.
 
 Verification uses `tests/unit/test_alpha_coverage_integrity.py`,

@@ -971,3 +971,78 @@ separate gate; schema creation inside regressions does not prove migration parit
   performed. This verified batch advances R11; canonical anchors/provenance,
   selective invalidation, dense storage and whole-path throughput/latency still
   require closure. R3 and R11–R14 remain OPEN under the complete original objective.
+
+
+## Lossless canonical-anchor retention (2026-11-09)
+
+- Canonical anchors are no longer required to stay as one indexed hot row per
+  historical height. Old complete512-height buckets move into bounded compressed,
+  immutable segment revisions, retaining exact hash/UTC observation time and a
+  SHA256/format/row-count check. Missing heights stay missing. Current lookup merges
+  the latest requested archive buckets with hot corrections by observation time;
+  old scans still see a known fork conflict after compaction. Older authoritative
+  responses cannot replace a newer archived observation. Old segment revisions
+  survive corrections; receipts, manifests and research history are not TTL-deleted.
+- The hot target defaults to4096 blocks and expands to retain the full configured
+  reconciliation window. One cycle handles at most one complete512-height bucket;
+  after backlog drains, at most511 incomplete-bucket heights can exceed the target.
+  Undrained backlog and total immutable evidence can grow. This is not a fixed disk
+  cap, nor a claim that PostgreSQL allocated files shrink after deletion.
+- Copy/checksum/new segment/conditional hot deletion use the same publication fence
+  and commit atomically. A real unexpected external correction between copy/delete
+  rejects the archive and preserves the correction/all hot rows. Actual cancellation
+  after segment write but before delete leaves1536 hot rows/zero segments; a new
+  cycle then succeeds. Corrupt bytes, digest/schema/time errors, oversized/trailing
+  streams and parser nesting faults fail closed without becoming missing evidence.
+- Canonical publication is batched: the600-height RED case originally issued1802
+  SQL statements; the GREEN case requires at most15. Existing single-row insert_once
+  callers remain compatible with its new positional mapping/list support. There
+  is no score/label recipe change: the same canonical fence values are retained.
+- Maintenance runs as an anchor-archive phase cohosted with research reconstruction,
+  in a separate small source transaction. Its own whitelisted /health profile
+  publishes archive/count/state fields only after source commit. Metadata audit
+  pagination excludes payload columns; a separate detail verifies one segment and
+  explicitly distinguishes latest archive revision from current hot/chain truth.
+- Migration0046 is additive, retains hot rows, refuses any evidence-losing online
+  downgrade and refuses unverifiable offline downgrade. Updated readers/writers
+  require migration-first/stopped-old-binary rollout. A real head0046 upgrade exposed
+  old hardcoded current-head checks; a shared test helper now derives the graph head
+  while retaining every explicit historical target. The full PostgreSQL integration
+  selection passed24 tests/2 live-network skips, including every migration test.
+- One fresh read-only review found one Important/no Critical/Minor: a precommit
+  heartbeat could hold the global fence for the2s reporting deadline. Real blocked
+  telemetry/independent-publication cases were RED then GREEN for ARCHIVED and IDLE
+  cycles. The await now happens only before acquiring or after releasing the fence.
+- The parent regraded an archive-specific part of a declined lifecycle concern:
+  corrupted evidence made reconciliation record failure while retaining its source
+  transaction. A real independent publisher reproduced the stall RED. The new
+  reconciliation-owner context rolls back before releasing the shared AsyncSession
+  owner, preserving fail-closed reads and independent progress. The fix pass verifies
+  normal reconciliation/cancellation too; it does not certify every older ingestion
+  exception/cache path. No second review or deferred Minor findings.
+- PostgreSQL realistic-hash benchmark:16384 hot rows drain in24 moves to4096;
+  another16384 observations drain from20480 hot rows in32 moves back to4096. A deep
+  correction retains57 total segment revisions; five no-op cycles add none. Binary
+  payload1251692 bytes represents3204045 bytes of deterministic JSON. Local2.744/
+  3.576s drain times are synthetic evidence, not a production throughput SLO. Initial
+  16384 hot logical rows occupy1966077 bytes and final4096 occupy491517 bytes; these
+  different populations are not a before/after total database-file comparison.
+- Final PostgreSQL runtime/coverage/collector/research/derived selection **135 passed**
+  after both lock fixes. The plan records all review rulings: total storage/production
+  sizing remains open, consistent backup/rollout/full topology remains R12/R14,
+  raw SQL administration is outside ORM immutability, checksum is not signed source
+  authenticity, and read-only review did not independently execute the test fixtures.
+  Frontend/live-provider acceptance is unchanged. See [anchor retention](CANONICAL_ANCHORS.md).
+- Final backend after both lock fixes: **855 passed, 64 skipped, 14 warnings**.
+  Warning categories are existing Alembic configuration/FastAPI/Starlette
+  deprecations and SQLite expression-index reflection; deriving migration head
+  adds an Alembic configuration warning emission, not a runtime failure. Ruff and
+  whitespace checks passed. Final PostgreSQL135/complete integration24 pass counts
+  above remain the authoritative scoped database evidence;2 live-network tests
+  intentionally remain skipped. No frontend source was changed in this batch.
+- Verified zero owned test schemas and other database clients, stopped the owned
+  foreground PostgreSQL process and observed successful terminal exit. Temporary
+  verification/benchmark evidence is kept outside Git; older user data/releases
+  remain untouched. No deployment, production migration/write or provider call
+  was performed. R3 and R11–R14 remain OPEN; full dense provenance storage,
+  selective invalidation and whole-path throughput/latency still require closure.

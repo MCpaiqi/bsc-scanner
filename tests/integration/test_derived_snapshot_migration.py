@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from migration_head import CURRENT_HEAD
 from sqlalchemy import MetaData, Table, create_engine, select
 from sqlalchemy.orm import Session
 
@@ -97,7 +98,7 @@ def test_pre_lineage_snapshots_are_preserved_quarantined_and_reconstructed():
             assert rebuilt_market.volume_5m == 10 and rebuilt_market.price_usd is None
         refused = alembic("downgrade", "20261106_0037")
         assert refused.returncode != 0 and "refusing" in refused.stderr
-        assert "20261106_0043" in alembic("current").stdout
+        assert CURRENT_HEAD in alembic("current").stdout
     finally:
         engine.dispose()
         try:

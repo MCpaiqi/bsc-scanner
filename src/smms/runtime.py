@@ -730,10 +730,54 @@ async def run_rebuild_cycle(settings, *, at=None):
     return report
 
 
+async def run_anchor_archive_cycle(settings, *, at=None):
+    from smms.alpha.anchors import archive_anchors
+    from smms.evaluation import utc
+
+    started, cutoff = perf_counter(), utc(at or datetime.now(UTC))
+    report = {"phase": "ARCHIVE", "committed": False, "started_at": datetime.now(UTC).isoformat(),
+              "evaluation_as_of": cutoff.isoformat(), "finished_at": None, "seconds": 0.0,
+              "archive_seconds": None, "commit_seconds": None, "rows_archived": None,
+              "segments_written": None, "bucket_start": None, "archive_state": None, "error_code": None}
+    async def emit(status):
+        report["seconds"] = perf_counter() - started
+        await _report_research_cycle(status, report, worker_type="anchor-archive")
+    try:
+        await emit("RUNNING")
+        async with session_scope(settings) as session:
+            stage = perf_counter()
+            result = await session.run_sync(lambda sync: archive_anchors(sync,
+                keep_recent_blocks=max(settings.canonical_anchor_hot_blocks, settings.bsc_reorg_lookback_blocks + 1), now=cutoff))
+            report.update(phase="COMMIT", archive_seconds=perf_counter() - stage)
+            # The outer transaction still owns the global canonical fence.
+            # Commit before awaiting any separate telemetry connection.
+            stage = perf_counter()
+            await session.commit()
+            report.update(committed=True, commit_seconds=perf_counter() - stage, rows_archived=result["rows_archived"],
+                          segments_written=result["segments_written"], bucket_start=result["bucket_start"], archive_state=result["state"])
+        report.update(phase="IDLE", finished_at=datetime.now(UTC).isoformat())
+        await emit("RUNNING")
+    except asyncio.CancelledError:
+        report.update(error_code="CANCELLED", finished_at=datetime.now(UTC).isoformat())
+        await emit("STOPPED")
+        raise
+    except (SQLAlchemyError, PostgresError, OSError, ValueError) as exc:
+        report.update(error_code="DB_ERROR" if isinstance(exc, (SQLAlchemyError, PostgresError)) else
+                      "IO_ERROR" if isinstance(exc, OSError) else "INVALID_INPUT", finished_at=datetime.now(UTC).isoformat())
+        await emit("DEGRADED")
+        logging.getLogger(__name__).warning("canonical archive retry reason=%s", type(exc).__name__)
+    except Exception:
+        report.update(error_code="INTERNAL_ERROR", finished_at=datetime.now(UTC).isoformat())
+        await emit("DEGRADED")
+        raise
+    return report
+
+
 async def run_research_rebuild() -> None:
     settings = get_settings()
     while True:
         await run_rebuild_cycle(settings)
+        await run_anchor_archive_cycle(settings)
         await asyncio.sleep(5)
 
 

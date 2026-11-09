@@ -9,6 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from migration_head import CURRENT_HEAD
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -114,7 +115,7 @@ def test_usd_policy_preserves_values_quarantines_dependents_and_recovers_after_r
             assert session.scalar(select(TokenSmartMoneySnapshot)).smart_money_net_flow is None
         refused = alembic("downgrade", "20261106_0042")
         assert refused.returncode != 0 and "refusing lossy downgrade" in refused.stderr
-        assert "20261106_0043" in alembic("current").stdout
+        assert CURRENT_HEAD in alembic("current").stdout
     finally:
         engine.dispose()
         try:

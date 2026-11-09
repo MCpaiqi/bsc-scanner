@@ -78,8 +78,9 @@ retryable. Heartbeat failure does not undo a successful reconstruction commit.
 An unsupported recipe and a genuine unavailable result remain distinct statuses.
 
 The250ms bound applies per database lock wait, not to whole queries, CPU work or
-the total batch. Dense synchronous computation can delay pulses. Full source/
-anchor retention, dense manifest storage, selective invalidation, canonical-fence
+the total batch. Dense synchronous computation can delay pulses. Canonical anchor
+retention now has [lossless hot/archive storage](CANONICAL_ANCHORS.md). Dense source/
+manifest storage, selective invalidation, canonical-fence
 publication latency and measured asynchronous throughput remain open R11 work.
 
 Read-only endpoints:

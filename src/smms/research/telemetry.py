@@ -7,6 +7,8 @@ from smms.evaluation import utc
 
 _ERRORS = {"DB_ERROR", "IO_ERROR", "INVALID_INPUT", "INTERNAL_ERROR", "CANCELLED"}
 _PROFILES = {
+    "anchor-archive": ({"ARCHIVE", "COMMIT", "IDLE"},
+        ("seconds", "archive_seconds", "commit_seconds"), ("rows_archived", "segments_written"), 512),
     "forward-worker": ({"FORWARD", "ALPHA", "COMMIT", "IDLE"},
         ("seconds", "forward_seconds", "alpha_seconds", "commit_seconds"),
         ("forward_evaluated", "alpha_scored"), 2000),
@@ -50,6 +52,10 @@ def cycle_summary(value, *, worker_type="forward-worker"):
     for key in counts:
         number = value.get(key)
         result[key] = number if committed and type(number) is int and 0 <= number <= maximum else None
+    if worker_type == "anchor-archive":
+        state, bucket = value.get("archive_state"), value.get("bucket_start")
+        result["archive_state"] = state if committed and isinstance(state, str) and state in {"ARCHIVED", "IDLE", "BUSY"} else None
+        result["bucket_start"] = bucket if committed and type(bucket) is int and 0 <= bucket < 2**63 and bucket % 512 == 0 else None
     return result
 
 

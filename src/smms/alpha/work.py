@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 
 from smms.alpha.policy import SCORE_VERSION, SNAPSHOT_WINDOWS, TRACKING_HORIZON
 from smms.db.models import (
-    AlphaBlockAnchor,
     AlphaCoverageJob,
     AlphaCoverageReceipt,
     AlphaSnapshot,
@@ -17,6 +16,8 @@ from smms.db.models import (
 from smms.evaluation import utc
 from smms.market.protocols import PancakeSwapConfig
 from smms.research.maintenance import try_repair_ownership
+
+from .anchors import anchor_blocks
 
 SWAP_TOPIC = PancakeSwapConfig().swap_topic.lower()
 
@@ -220,39 +221,3 @@ def invalidate_removed_source(session, *, block_number, block_hash, now, force=F
     if effective[block_number] == expected:
         anchor_blocks(session, {block_number: f"orphaned:{expected}"}, observed_at=now, authoritative=True)
     return invalidate_coverage(session, from_block=block_number, now=now)
-
-
-def anchor_blocks(session: Session, blocks: dict[int, str], *, observed_at: datetime,
-                  authoritative: bool) -> tuple[dict[int, str], list[int]]:
-    """Lock the canonical publication fence before jobs in both owners.
-
-    A short DB-only publication section serializes even absent block rows. Only
-    reconciliation writes anchors; rejected/stale collectors cannot poison old
-    unanchored ranges. Older reconciliation requests cannot replace newer facts.
-    """
-    key = "canonical-publication-fence-v1"
-    _insert(session, AlphaWorkCursor, {"version": key, "last_pair_id": 0}, ["version"])
-    session.scalar(select(AlphaWorkCursor).where(AlphaWorkCursor.version == key).with_for_update())
-    if not authoritative:
-        effective = {number: block_hash.lower() for number, block_hash in blocks.items()}
-        for row in session.scalars(select(AlphaBlockAnchor).where(
-            AlphaBlockAnchor.chain_id == 56, AlphaBlockAnchor.block_number.in_(blocks),
-        ).execution_options(populate_existing=True)):
-            effective[row.block_number] = row.block_hash
-        return effective, []
-    effective, changed = {}, []
-    for number, block_hash in sorted(blocks.items()):
-        _insert(session, AlphaBlockAnchor, {
-            "chain_id": 56, "block_number": number, "block_hash": block_hash.lower(),
-            "observed_at": observed_at,
-        }, ["chain_id", "block_number"])
-        row = session.scalar(select(AlphaBlockAnchor).where(
-            AlphaBlockAnchor.chain_id == 56, AlphaBlockAnchor.block_number == number,
-        ).with_for_update().execution_options(populate_existing=True))
-        if authoritative and utc(observed_at) >= utc(row.observed_at):
-            if row.block_hash != block_hash.lower():
-                changed.append(number)
-            row.block_hash, row.observed_at = block_hash.lower(), observed_at
-        effective[number] = row.block_hash
-    session.flush()
-    return effective, changed

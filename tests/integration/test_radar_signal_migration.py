@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from migration_head import CURRENT_HEAD
 from sqlalchemy import MetaData, Table, create_engine, select
 from sqlalchemy.orm import Session
 
@@ -125,7 +126,7 @@ def test_legacy_radar_and_signal_values_are_preserved_and_reconstructed():
             assert candidate_view(session, session.get(RadarCandidate, candidate_id))["features"]["smart_money_score"] == str(smart.smart_money_score)
         refused = alembic("downgrade", "20261106_0039")
         assert refused.returncode != 0 and "refusing lossy downgrade" in refused.stderr
-        assert "20261106_0043" in alembic("current").stdout
+        assert CURRENT_HEAD in alembic("current").stdout
     finally:
         engine.dispose()
         try:

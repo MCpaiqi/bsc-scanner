@@ -1421,6 +1421,7 @@ def _worker_health(sync, *, now: datetime) -> dict[str, dict[str, object]]:
         "event-relay": "event_relay",
         "forward-worker": "forward_worker",
         "research-rebuild": "research_rebuild",
+        "anchor-archive": "anchor_archive",
     }
     # A worker type can have rows from stopped/restarted instances.  Always
     # resolve the newest durable heartbeat so an old instance cannot mask the
@@ -1465,7 +1466,7 @@ def _worker_health(sync, *, now: datetime) -> dict[str, dict[str, object]]:
             "age_seconds": age,
             "current_job": row.current_job,
         }
-        if worker_type in {"forward-worker", "research-rebuild"}:
+        if worker_type in {"forward-worker", "research-rebuild", "anchor-archive"}:
             result[source]["research"] = research_worker_health(row.details_json, worker_type=worker_type)
     return result
 

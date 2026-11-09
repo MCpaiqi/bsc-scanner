@@ -7,6 +7,7 @@ import os
 import socket
 import time
 from collections.abc import Sequence
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
@@ -491,9 +492,20 @@ class BSCRealtimeIngestionService:
         )
         return max(0, int(recovery_block or 0) - max(0, int(lookback)))
 
+    @asynccontextmanager
+    async def _reconciliation_owner(self):
+        """Roll back a failed probe before another task can reuse its session."""
+        async with self._db_lock:
+            try:
+                yield
+            except BaseException:
+                if self.session is not None:
+                    await self.session.rollback()
+                raise
+
     async def reconcile_reorg_window(self, latest: int, lookback: int) -> int:
         """Serialize canonical reorg reconciliation with log ingestion."""
-        async with self._db_lock:
+        async with self._reconciliation_owner():
             return await self._reconcile_reorg_window_unlocked(latest, lookback)
 
     async def _reconcile_reorg_window_unlocked(self, latest: int, lookback: int) -> int:
@@ -600,7 +612,7 @@ class BSCRealtimeIngestionService:
                     # The live subscription also owns this AsyncSession.  A
                     # reorg probe must never provision or execute on it at
                     # the same time as Raw -> Trade projection.
-                    async with self._db_lock:
+                    async with self._reconciliation_owner():
                         if self._closed or self._reorg_stop.is_set():
                             break
                         await self._reconcile_reorg_window_unlocked(latest, lookback)

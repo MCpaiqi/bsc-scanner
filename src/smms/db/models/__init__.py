@@ -1,4 +1,10 @@
-from .alpha import AlphaBlockAnchor, AlphaCoverageJob, AlphaCoverageReceipt, AlphaWorkCursor
+from .alpha import (
+    AlphaBlockAnchor,
+    AlphaCoverageJob,
+    AlphaCoverageReceipt,
+    AlphaWorkCursor,
+    CanonicalAnchorSegment,
+)
 from .analyst import AlertHistory, AlertNotification, AlertRule, RadarAnnotation
 from .audit import RadarAuditJob, RadarAuditJobStatus
 from .base import Base, TimestampMixin, utc_now
@@ -72,6 +78,7 @@ __all__ = [
     "BacktestDataset",
     "BacktestDatasetRow",
     "Base",
+    "CanonicalAnchorSegment",
     "Chain",
     "EarlyBuyer",
     "EventType",

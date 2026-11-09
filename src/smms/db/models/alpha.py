@@ -7,15 +7,17 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
+    LargeBinary,
     String,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base
+from .base import Base, utc_now
 
 
 class AlphaCoverageJob(Base):
@@ -75,3 +77,27 @@ class AlphaBlockAnchor(Base):
     block_number: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     block_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CanonicalAnchorSegment(Base):
+    """Lossless immutable revisions of complete canonical-anchor height buckets."""
+
+    __tablename__ = "canonical_anchor_segments"
+    __table_args__ = (
+        UniqueConstraint("chain_id", "bucket_start", "revision", name="uq_canonical_anchor_segment"),
+        CheckConstraint("bucket_start >= 0 AND bucket_start % 512 = 0 AND bucket_end = bucket_start + 511",
+                        name="ck_canonical_anchor_bucket"),
+        CheckConstraint("revision >= 0 AND row_count >= 1 AND row_count <= 512 AND raw_bytes > 0",
+                        name="ck_canonical_anchor_segment_size"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    chain_id: Mapped[int] = mapped_column(nullable=False)
+    bucket_start: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    bucket_end: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    revision: Mapped[int] = mapped_column(nullable=False)
+    format_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    row_count: Mapped[int] = mapped_column(nullable=False)
+    raw_bytes: Mapped[int] = mapped_column(nullable=False)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)

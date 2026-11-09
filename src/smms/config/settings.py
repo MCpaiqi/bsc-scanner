@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     bsc_confirmation_depth: int = Field(3, alias="BSC_CONFIRMATION_DEPTH", ge=0)
     bsc_poll_interval_seconds: float = Field(2, alias="BSC_POLL_INTERVAL_SECONDS", gt=0)
     bsc_reorg_lookback_blocks: int = Field(12, alias="BSC_REORG_LOOKBACK_BLOCKS", ge=0)
+    canonical_anchor_hot_blocks: int = Field(4096, alias="CANONICAL_ANCHOR_HOT_BLOCKS", ge=512, le=10_000_000)
     # A live edge is an epoch, not a historical recovery cursor.  Changing
     # this name deliberately starts a fresh, safe-head checkpoint while the
     # historical ``bsc_realtime`` lane remains intact.

@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from migration_head import CURRENT_HEAD
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session
 
@@ -53,7 +54,7 @@ def test_outbox_migration_preserves_state_and_refuses_lossy_downgrade():
         with engine.connect() as connection:
             assert connection.scalar(text("SELECT event_id FROM radar_event_outbox")) == event_id
             assert connection.scalar(text("SELECT epoch FROM research_states WHERE chain='bsc'")) == 7
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20261107_0045"
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == CURRENT_HEAD
     finally:
         engine.dispose()
         with owner.begin() as connection:

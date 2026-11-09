@@ -10,7 +10,7 @@ def insert_once(session, model, values, keys):
         from sqlalchemy.dialects.postgresql import insert
     else:
         from sqlalchemy.dialects.sqlite import insert
-    session.execute(insert(model).values(**values).on_conflict_do_nothing(index_elements=keys))
+    session.execute(insert(model).values(values).on_conflict_do_nothing(index_elements=keys))
 
 
 def capture_epoch(session, chain="bsc") -> int:
