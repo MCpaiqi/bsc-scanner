@@ -11,7 +11,9 @@ SMMS 是一个链上研究平台。当前产品界面聚焦 BNB Smart Chain，�
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
+python scripts/lock_dependencies.py check
+python -m pip install --require-hashes --only-binary=:all: -r requirements/dev.lock
+python -m pip install --no-deps --no-build-isolation -e .
 Copy-Item .env.example .env
 docker compose up --build
 ```
@@ -106,26 +108,22 @@ bash scripts/test.sh
 python scripts/test.py
 ```
 
-入口执行 `pip install -e ".[dev]"`、pytest、ruff check；无需 PYTHONPATH。
+入口先核对依赖声明与锁文件，再执行 pytest 和 Ruff；验证过程不安装或更新依赖。
 固定 hash seed / UTC、显式加载 pytest-asyncio，禁用外部插件自动加载，使用独立临时目录，
-并设置 `ENABLE_LIVE_TRADING=false`。依赖版本仍采用 pyproject 中的范围，不是锁文件复现。
+并设置 `ENABLE_LIVE_TRADING=false`。首次安装、Node 24.15.0 前端检查、真实 PostgreSQL/Redis
+测试和锁文件更新命令见 [可复现检查](docs/REPRODUCIBLE_CHECKS.md)。
 
-发布前先生成项目目录外的 release artifact。默认输出为项目旁的
-`../artifacts/smms-release/`（及同名 zip），因此不会把输出再次复制进 source tree：
+发布前生成项目目录外的 source artifact：
 
 ```bash
-python scripts/build_release.py
+python scripts/build_release.py --output ../artifacts/smms-release-v1
 ```
 
-构建器会排除 `.git/`、`.venv/`、`venv/`、`node_modules/`、`__pycache__/`、
-`.pytest_cache/`、`.ruff_cache/`、`.mypy_cache/`、`build/`、`dist/`、`coverage/`、
-`release/`、`tmp/`、`cache/`、`temporary/`、测试目录、`.env`、本地数据库和
-临时 Phase/pytest/release-test 目录、日志、数据库转储和 TypeScript 构建缓存。
-`data/` 只保留 `.gitkeep` 目录占位文件，不分发本地运行数据。
-发布工具脚本仍包含在 artifact 中。重复运行命令会先清理同一 artifact，再重新构建。
-如需指定目录，使用 `--output`；即使指定项目内目录，构建器也会跳过输出目录，
-并拒绝把 source root 本身或其祖先目录作为输出。
-源目录按脚本位置确定；相对 `--output` 路径相对于源目录解析，与调用时的工作目录无关。
+Git checkout 只打包已跟踪的输入；源代码导出目录也可构建。环境文件、本地运行数据、缓存、
+测试和既有发布产物会排除，保留 `.env.example`、配置、依赖锁和发布工具。
+每个文件的 SHA256 写入 `.release-manifest.json`；ZIP 按固定顺序与时间戳生成。
+相同输入可重复核验，输入改变或输出目录未经核验时会拒绝覆盖，必须选择新的输出路径。
+默认输出为项目旁的 `../artifacts/smms-release/` 及同名 ZIP；相对 `--output` 相对于源目录。
 
 发布前审计实际待分发目录：
 

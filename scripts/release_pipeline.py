@@ -8,17 +8,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
 
 def run_gate(root: Path, *, skip_frontend: bool = False) -> dict[str, Any]:
     commands: list[list[str]] = [
-        [sys.executable, "-m", "pytest", "-p", "pytest_asyncio.plugin"],
-        [sys.executable, "-m", "ruff", "check", "src", "scripts", "tests", "--no-cache"],
+        [sys.executable, "scripts/test.py"],
     ]
     if not skip_frontend:
         npm = shutil.which("npm") or shutil.which("npm.cmd") or "npm"
+        commands.append([npm, "--prefix", "web", "test", "--", "--reporter=dot"])
         commands.append([npm, "run", "build", "--prefix", "web"])
     results = []
     environment = dict(os.environ, PYTEST_DISABLE_PLUGIN_AUTOLOAD="1")
@@ -42,7 +43,8 @@ def run_gate(root: Path, *, skip_frontend: bool = False) -> dict[str, Any]:
         artifact = None
         if all(item["returncode"] == 0 for item in results):
             try:
-                built = subprocess.run([sys.executable, "scripts/build_release.py"], cwd=root, env=environment, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
+                output = root.parent / "artifacts" / ("smms-release-" + uuid.uuid4().hex[:12])
+                built = subprocess.run([sys.executable, "scripts/build_release.py", "--output", str(output)], cwd=root, env=environment, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
                 built_code = built.returncode
                 built_stdout = built.stdout or ""
                 built_stderr = built.stderr or ""

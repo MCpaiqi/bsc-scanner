@@ -151,7 +151,7 @@ services:
       - "8080:80"
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
     environment:
       POSTGRES_DB: smms
       POSTGRES_USER: postgres
@@ -181,7 +181,7 @@ services:
     command: ["alembic", "upgrade", "head"]
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
     ports:
       - "6379:6379"
     volumes:

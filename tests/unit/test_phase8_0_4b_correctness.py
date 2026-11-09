@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
-import shutil
+import subprocess
 import tempfile
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -752,20 +752,21 @@ def test_release_artifact_excludes_sensitive_and_recursive_paths() -> None:
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    temp_root = Path(tempfile.mkdtemp(prefix="phase804b-release-", dir=Path.cwd()))
-    try:
-        root = temp_root / "project"
+    with tempfile.TemporaryDirectory(prefix="phase804b-release-") as temporary:
+        root = Path(temporary) / "project"
         (root / "scripts").mkdir(parents=True)
+        subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
         (root / "scripts" / "release_audit.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
         for path in (root / ".git", root / "release", root / "release-debug", root / "node_modules", root / ".pytest_cache"):
-            path.mkdir()
+            path.mkdir(exist_ok=True)
             (path / "secret.txt").write_text("secret", encoding="utf-8")
         (root / ".env").write_text("PRIVATE_KEY=secret\n", encoding="utf-8")
         (root / ".env.example").write_text("PRIVATE_KEY=\n", encoding="utf-8")
+        subprocess.run(["git", "add", "--force", "--", "scripts", ".env", ".env.example", "release",
+                        "release-debug", "node_modules", ".pytest_cache"], cwd=root, check=True,
+                       capture_output=True)
         archive = module.build_release(root, root / "artifact")
         output = archive.with_suffix("")
         assert (output / ".env.example").exists()
         assert not (output / ".env").exists()
         assert not any(part in {".git", "release", "release-debug", "node_modules", ".pytest_cache"} for path in output.rglob("*") for part in path.relative_to(output).parts)
-    finally:
-        shutil.rmtree(temp_root, ignore_errors=True)

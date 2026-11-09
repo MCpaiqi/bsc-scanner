@@ -11,6 +11,7 @@ from test_derived_snapshot_integrity import PAIR, T0, TOKEN, WALLET, fact, seed
 from test_research_integrity import research_session as _research_session
 
 from smms.db.models import Pair, TokenSmartMoneySnapshot, TradeEvent, WalletSmartMoneySnapshot
+from smms.evaluation import utc
 from smms.research.state import invalidate_derived
 from smms.smart_money.aggregation import IntelligenceAggregationService
 from smms.smart_money.profile import build_wallet_profile
@@ -38,7 +39,7 @@ def test_refresh_uses_corrected_persisted_values_despite_retained_identity_map(r
     research_session.commit()
     assert held.value_usd == 10
     pair = research_session.scalar(select(Pair).where(Pair.address == PAIR))
-    assert pair.creation_timestamp.replace(tzinfo=T0.tzinfo) == T0
+    assert utc(pair.creation_timestamp) == T0
     with Session(research_session.bind) as writer:
         source = writer.scalar(select(TradeEvent))
         source.value_usd = 20

@@ -1,0 +1,9 @@
+{
+  "dependency_inputs_sha256": "ec23e7b6f45267edbafa32e9fac742862a4761ac20f102203da5946cf77ef5b6",
+  "files": {
+    "dev.lock": "093be25361775d37a2a54b290405e59f6d006063c30ece21cf8ac6801d4d7f20",
+    "runtime.lock": "772afc2d47c6c726f35a310cf0129b8b373c5b534392cd6455239b826b100050"
+  },
+  "resolver": "uv==0.12.5",
+  "schema_version": 1
+}

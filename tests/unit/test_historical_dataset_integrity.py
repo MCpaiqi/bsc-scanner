@@ -12,6 +12,7 @@ from test_research_integrity import research_session as _research_session
 from smms.backtest.dataset import HistoricalDatasetBuilder, load_materialized_dataset
 from smms.backtest.signal_engine import run_backtest
 from smms.db.models import BacktestDataset, BacktestDatasetRow, Pair, TokenScore
+from smms.evaluation import utc
 from smms.research.rebuild import rebuild_due
 from smms.research.state import invalidate_derived
 
@@ -111,8 +112,8 @@ def test_rebuild_appends_dataset_revision_with_original_dates(research_session):
     research_session.commit()
     current = research_session.scalar(select(BacktestDataset))
     assert current is not None and current.id != old.id and current.previous_snapshot_id == old.id
-    assert current.period_from.replace(tzinfo=T0.tzinfo) == T0
-    assert current.period_to.replace(tzinfo=T0.tzinfo) == T0
+    assert utc(current.period_from) == T0
+    assert utc(current.period_to) == T0
     assert load_materialized_dataset(research_session, "history")[0]["market"]["price"] == "3"
     with pytest.raises(LookupError):
         load_materialized_dataset(research_session, old.id)

@@ -1,0 +1,194 @@
+name: Research verification
+
+on:
+  push:
+    branches: [main, master, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ENABLE_LIVE_TRADING: 'false'
+  PYTHONUTF8: '1'
+  PYTHONHASHSEED: '0'
+  BSC_RPC_ENDPOINTS: ''
+  BSC_WS_ENDPOINTS: ''
+  REDIS_URL: redis://127.0.0.1:1/0
+
+jobs:
+  backend:
+    name: Backend / ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-24.04, python: '3.12'}
+          - {os: ubuntu-24.04, python: '3.13'}
+          - {os: windows-2022, python: '3.13'}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements/dev.lock
+      - name: Verify lock inputs before installation
+        run: python scripts/lock_dependencies.py check
+      - name: Install locked tools and first-party code
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r requirements/dev.lock
+          python -m pip install --no-deps --no-build-isolation -e .
+          python -m pip check
+      - name: Run backend and lint from this checkout
+        run: python scripts/test.py -q --tb=short
+
+  database:
+    name: PostgreSQL, Redis and migration regressions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+        env:
+          POSTGRES_DB: smms_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres -d smms_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+      redis:
+        image: redis:7-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 12
+    env:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/smms_ci
+      SMMS_RESEARCH_TEST_DATABASE_URL: postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/smms_ci
+      SMMS_MIGRATION_TEST_DATABASE_URL: postgresql+psycopg2://postgres:postgres@127.0.0.1:5432/smms_ci
+      SMMS_REDIS_TEST_URL: redis://127.0.0.1:6379/15
+      REDIS_URL: redis://127.0.0.1:6379/15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements/dev.lock
+      - run: python scripts/lock_dependencies.py check
+      - run: |
+          python -m pip install --require-hashes --only-binary=:all: -r requirements/dev.lock
+          python -m pip install --no-deps --no-build-isolation -e .
+          python -m pip check
+      - name: Check fresh migration and a non-UTC database
+        shell: bash
+        run: |
+          python -m alembic upgrade head
+          python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, text
+          engine = create_engine(os.environ['SMMS_RESEARCH_TEST_DATABASE_URL'], isolation_level='AUTOCOMMIT')
+          with engine.connect() as connection:
+              connection.execute(text("ALTER DATABASE smms_ci SET timezone TO 'Asia/Hong_Kong'"))
+          engine.dispose()
+          PY
+      - name: Run full suite with real service fixtures
+        run: python scripts/test.py -q --tb=short
+
+  frontend:
+    name: Frontend / locked Node and npm graph
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm --prefix web ci --no-audit --no-fund
+      - run: npm --prefix web test -- --reporter=dot
+      - run: npm --prefix web run build
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: frontend-${{ github.sha }}
+          path: web/dist
+          if-no-files-found: error
+
+  artifacts:
+    name: Source, wheel and container smoke
+    needs: [backend, database, frontend]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements/runtime.lock
+      - run: |
+          python scripts/lock_dependencies.py check
+          python -m pip install --require-hashes --only-binary=:all: -r requirements/runtime.lock
+          python -m pip wheel --no-deps --no-build-isolation --wheel-dir dist .
+          python scripts/build_release.py --output "${{ runner.temp }}/smms-release"
+      - name: Build pinned runtime and web images without publishing
+        run: |
+          docker build --target runtime --tag smms-runtime:ci .
+          docker build --target web --tag smms-web:ci .
+      - name: Verify installed wheel resources and runtime inputs
+        run: |
+          docker run --rm --workdir /tmp smms-runtime:ci python -c "import smms; from pathlib import Path; p=Path(smms.__file__).parent; assert (p/'api/static/index.html').is_file(); a=p/'db/migrations/versions'; b=Path('/app/src/smms/db/migrations/versions'); assert {f.name:f.read_bytes() for f in a.glob('*.py')} == {f.name:f.read_bytes() for f in b.glob('*.py')}; assert (Path('/app/configs/scoring.yaml')).is_file(); assert (Path('/app/web/dist/index.html')).is_file()"
+      - name: Smoke API and web images on an owned network
+        shell: bash
+        run: |
+          network="smms-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          api="${network}-api"
+          web="${network}-web"
+          docker network create "$network"
+          cleanup() {
+            docker rm --force "$web" "$api" >/dev/null 2>&1 || true
+            docker network rm "$network" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run --detach --network "$network" --network-alias api --name "$api" -e REDIS_URL=redis://127.0.0.1:1/0 smms-runtime:ci
+          docker run --detach --network "$network" --name "$web" -p 127.0.0.1:18080:80 smms-web:ci
+          python - <<'PY'
+          import time
+          from urllib.request import urlopen
+          for attempt in range(40):
+              try:
+                  with urlopen('http://127.0.0.1:18080/', timeout=2) as response:
+                      assert b'id="root"' in response.read()
+                  with urlopen('http://127.0.0.1:18080/legacy', timeout=2) as response:
+                      assert response.status == 200
+                  break
+              except (OSError, AssertionError):
+                  if attempt == 39:
+                      raise
+                  time.sleep(.5)
+          PY
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: source-and-wheel-${{ github.sha }}
+          path: |
+            dist/*.whl
+            ${{ runner.temp }}/smms-release.zip
+          if-no-files-found: error

@@ -1046,3 +1046,42 @@ separate gate; schema creation inside regressions does not prove migration parit
   remain untouched. No deployment, production migration/write or provider call
   was performed. R3 and R11–R14 remain OPEN; full dense provenance storage,
   selective invalidation and whole-path throughput/latency still require closure.
+
+
+## Reproducible checks and delivery (2026-11-09, verification in progress)
+
+- Runtime/dev dependency locks pin existing tested Python versions, conditional
+  platform dependencies and build tools with hashes. The stdlib checker detects
+  stale declarations, altered lock bytes and npm direct-version drift while
+  accepting Git line-ending conversion. Explicit generation uses pinned uv0.12.5
+  and a temporary derived build input; no project uv.lock/.venv is modified.
+- Verification no longer installs or resolves dependencies. Clean Windows3.13 /
+  Linux3.12 installations and pip check passed. Exact npm specs preserve the prior
+  resolved graph. Node24.15.0/npm11.12.1 is required by the observed jsdom engine
+  boundary; clean frontend76tests and production build passed on both platforms.
+- Source packaging uses tracked inputs in a checkout, refuses failed/mismatched
+  Git discovery, preserves existing outputs, verifies per-file hashes and fixes
+  ZIP entry ordering/timestamps. Exported sources outside a checkout remain
+  supported without Git. Wheel checks verified47migration Python files and legacy
+  static resources; an independent Linux runtime-lock-only wheel install and CLI
+  check passed. Docker copies required configs and frontend dist and installs
+  locked dependencies before first-party code without dependency resolution.
+- New CI includes Ubuntu3.12/3.13, Windows3.13, actual PostgreSQL16/Redis7, frontend,
+  source/wheel and digest-pinned runtime/web image builds and HTTP smoke. Actions
+  are pinned; permissions contents:read; no checkout credential persistence,
+  deployment or image publication. Actual exact-SHA CI remains required.
+- Full local verification exposed Windows readonly Git fixture cleanup and four
+  old non-UTC test assertions. Cleanup has a narrow readonly-file retry; assertions
+  now convert instants with utc(), without changing product timestamp semantics.
+  PostgreSQL targeted70tests passed/1Windows-only skip; the next full runs passed874Windows /937Linux cases but each rejected one
+  old release fixture with fake .git metadata. That fixture now uses real Git and
+  explicit dummy tracked inputs;27Windows packaging/lock/runner tests passed. Final
+  full corrected suites and exact-SHA CI are still pending. A fresh read-only review found one Important Git fallback defect,
+  now RED→GREEN, and one deferred Minor unused provider-disabling environment alias.
+  Full rulings and boundaries are in the implementation plan and
+  [reproduction guide](REPRODUCIBLE_CHECKS.md).
+- R12 remains OPEN until final local checks and the actual pushed SHA's complete
+  CI succeed. R3/R11/R13/R14 are still OPEN. Docker daemon is unavailable locally;
+  no container/full-topology/provider or production assurance follows from YAML
+  inspection alone. Existing untracked data, reports, releases and environments
+  remain untouched and outside the scoped commit.
