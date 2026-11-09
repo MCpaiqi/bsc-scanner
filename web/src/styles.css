@@ -303,3 +303,15 @@ td small { display: block; color: var(--faint); font-size: 10px; }
   .intelligence-page .activity-row { grid-template-columns: 1fr; gap: 5px; }.empty-state { min-height: 290px; padding: 22px; }.empty-state > span:not(.empty-symbol) { font-size: 10px; line-height: 1.8; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
+
+.analyst-workflow { padding: 0 22px 22px; display: grid; gap: 16px; }
+.workflow .workflow-scope { width: 100%; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.workflow .workflow-wide { display: grid; gap: 6px; width: 100%; }
+.workflow .workflow-wide input { width: 100%; }
+.workflow input:not([type=checkbox]), .workflow select, .workflow button { min-height: 44px; }
+.workflow select { background: var(--bg); border: 1px solid var(--line); padding: 8px; margin-left: 8px; max-width: 100%; }
+.workflow > p[role] { width: 100%; font-size: 12px; }
+.workflow > p[role=alert] { color: var(--yellow); }
+.workflow-latest { width: 100%; padding: 12px; border: 1px solid var(--line); color: var(--muted); }
+.workflow-latest pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+@media (max-width: 650px) { .analyst-workflow { padding: 0 16px 16px; } }

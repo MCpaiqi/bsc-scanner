@@ -25,7 +25,7 @@ explicit UNKNOWN states. Preserve existing local data and untracked source.
 - [x] R8: Alpha score range, available evidence, threshold and UI classifications agree.
 - [x] R9: complete candidate sorting/filtering/pagination, continuously refreshed
   detail/statistics and separate unavailable/error/stale states are demonstrated.
-- [ ] R10: annotations and token/global alerts have explicit scope and visible save results.
+- [x] R10: annotations and token/global alerts have explicit scope and visible save results.
 - [ ] R11: evaluation work is bounded by due pending tasks; prices are fetched in
   batches; VWAP processing avoids quadratic rescans; runtime latency is observable.
 - [ ] R12: clean-checkout backend/frontend checks and PostgreSQL migrations run in
@@ -780,3 +780,73 @@ separate gate; schema creation inside regressions does not prove migration parit
   and refresh contract. R3 final audit and R10–R14 remain OPEN; the original goal
   stays active. Latest user authorization continues verified pushes to
   origin/codex/research-integrity without merge or deployment.
+
+
+## Explicit analyst scope and safe manual writes (2026-11-09)
+
+- R10 implements persisted TOKEN/GLOBAL alert targets, rather than inferring a
+  token from a name. BSC addresses normalize at the write boundary; automatic and
+  explicit evaluation reject another token/chain before creating history. Partial
+  updates retain omitted scope/target fields; GLOBAL expansion requires an
+  explicit choice. New UI defaults to the current token and displays its full
+  address; success names the submitted scope and returned rule ID.
+- Annotations now require expected_revision:0 for a currently absent annotation,
+  or a positive current revision for updates/deletion. Missing preconditions
+  return428 and conflicting edits return409. Deleted contents clear while a
+  version tombstone prevents reusing a positive revision after re-creation.
+  Independent PostgreSQL writers produce exactly one successful create/update;
+  the losing request cannot overwrite it.
+- Rule creation accepts a unique UUID request identity. Concurrent retries return
+  one rule without rolling back unrelated writes. Request IDs are immutable on
+  PATCH. Rule deletion hides/disables a tombstone and retains history/request
+  metadata, so delayed creation retries cannot resurrect it. Browser retry IDs
+  persist for recent256 definitions in a tab, through detail closure/reopening,
+  parameter revisits and reload when session storage works; no notes or credentials
+  enter this cache. Legacy callers without IDs remain non-idempotent.
+- AnalystWorkflow is independent of research refresh and owns loading/drafts/save
+  outcomes. A failed read blocks editing/saving; only404 establishes empty state.
+  Favorite/note/tags use one explicit save. Edits made during submission remain
+  visibly unsaved after that submission completes. Conflicts preserve the draft
+  while an explicit latest-version read provides comparison; the preservation
+  intent survives failed recovery reads even when dirty comparison is false.
+- Migration0045 preserves old notes at revision1 and old rules as GLOBAL, adds
+  native boolean defaults, scope checks and UUID uniqueness, and refuses loss of
+  target/revision/request/deletion metadata on downgrade. SQLite full-suite checks
+  initially exposed unsupported ALTER constraints; the batch-alter correction is
+  GREEN. A separate raw legacy-insert RED regression proved quoted false defaults
+  could hide annotations on SQLite; native SQL defaults fix it.
+- One fresh read-only review was interrupted by a usage limit, then resumed on the
+  same reviewer and returned two Important findings: omitted PATCH scope broadened
+  TOKEN to GLOBAL, and failed conflict-recovery retry discarded a preserved draft.
+  Both were reproduced RED and fixed GREEN in one review pass. The reviewer raised
+  retry-lifetime policy for a ruling; a further RED closure/reopen case now requires
+  persisted tab-local identities. All considered scope decisions/costs are recorded
+  in the plan; no deferred minors.
+- Browser QA used the actual analyst HTTP router and a separate PostgreSQL schema,
+  with synthetic market context and no live providers. It saved revision1, an
+  independent writer committed revision2, the UI rejected the old draft revision,
+  retained it during comparison and saved revision3. Creating TOKEN and explicitly
+  GLOBAL rules persisted exactly two distinct targets. Screenshot/evidence files
+  stay outside Git. The owned QA server exited and dropped its schema.
+- Final frontend **76 tests passed**, TypeScript/production build passed. A valid
+  checksum-cased target RED regression also showed successful canonical lowercase
+  responses could be misreported as failed; the workflow now normalizes BSC identity
+  before requests, cache signatures and scope validation.
+- Final backend **781 passed, 39 skipped, 13 existing warnings**; full Ruff and
+  whitespace checks passed. Final PostgreSQL16 selection **66 passed**, including
+  migration0045/0044 history preservation, guarded downgrade, independent writer
+  races and existing signal/outbox regressions. The raw-SQL default test explicitly
+  selects its owned schema on PostgreSQL; its initial missing-search-path failure
+  was a test fixture routing error, not a missing product table.
+- Verified zero owned verification schemas and other DB connections after browser
+  and test teardown, then stopped only the owned foreground PostgreSQL process.
+  R10 is complete at the explicit scope/conditional-write/visible-outcome contract.
+  No merge, deployment, production database write or live-provider operation occurred.
+- Environment evidence: an earlier background WSL database disappeared before a
+  selected run (connection refused and missing /tmp data), causing setup errors;
+  these are not counted as product checks. Verification resumed from a retained,
+  task-owned home-directory database with an explicitly foreground-owned WSL
+  process. No production database, Docker configuration or live provider was changed.
+- Remaining audit: R13 must harden analyst access and condition operand validation;
+  R3 must review manual evaluation provenance; R14 must verify delivery semantics
+  and the full isolated topology. R3 and R11–R14 remain OPEN under the original goal.

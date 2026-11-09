@@ -8,10 +8,13 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
+from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from smms.chains.constants import normalize_bsc_address, validate_bsc_chain
 from smms.db.models import AlertHistory, AlertNotification, AlertRule, RadarCandidate, Token
 from smms.evaluation import utc
 
@@ -154,9 +157,27 @@ def validate_rule_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     cooldown = int(payload.get("cooldown_seconds", 300))
     if cooldown < 0:
         raise InvalidRuleError("cooldown_seconds must be >= 0")
+    target = payload.get("token_address")
+    scope = payload.get("scope", "TOKEN" if target is not None else "GLOBAL")
+    chain = payload.get("chain")
+    if scope not in {"GLOBAL", "TOKEN"} or (scope == "GLOBAL" and target is not None):
+        raise InvalidRuleError("scope and token_address contradict each other")
+    if scope == "TOKEN":
+        try:
+            chain, target = validate_bsc_chain(chain), normalize_bsc_address(target)
+        except ValueError as exc:
+            raise InvalidRuleError(str(exc)) from exc
+    request_id = payload.get("request_id")
+    if request_id is not None:
+        try:
+            request_id = str(UUID(str(request_id)))
+        except (ValueError, AttributeError) as exc:
+            raise InvalidRuleError("invalid request_id") from exc
     return {
         "name": name,
-        "chain": payload.get("chain"),
+        "chain": chain,
+        "token_address": target,
+        "request_id": request_id,
         "conditions_json": conditions,
         "match_mode": mode,
         "notification_channels": channels,
@@ -167,9 +188,25 @@ def validate_rule_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def create_rule(session: Session, payload: Mapping[str, Any]) -> AlertRule:
     values = validate_rule_payload(payload)
+    def existing():
+        row = session.scalar(select(AlertRule).where(AlertRule.request_id == values["request_id"])
+                             .execution_options(populate_existing=True))
+        if row is not None and row.deleted:
+            raise InvalidRuleError("request_id belongs to a deleted rule")
+        if row is not None and any(getattr(row, key) != value for key, value in values.items()):
+            raise InvalidRuleError("request_id already belongs to a different rule payload")
+        return row
+    if values["request_id"] is not None and (row := existing()) is not None:
+        return row
     rule = AlertRule(**values)
-    session.add(rule)
-    session.flush()
+    try:
+        with session.begin_nested():
+            session.add(rule)
+            session.flush()
+    except IntegrityError:
+        if values["request_id"] is not None and (row := existing()) is not None:
+            return row
+        raise
     return rule
 
 
@@ -196,7 +233,10 @@ def evaluate_enabled_rules(
     elif capture_epoch(session, chain) > 0 or (candidate and candidate.projection_id is not None):
         return []
     results = []
-    for rule in session.scalars(select(AlertRule).where(AlertRule.enabled.is_(True))).all():
+    for rule in session.scalars(select(AlertRule).where(AlertRule.enabled.is_(True), AlertRule.deleted.is_(False),
+        or_(AlertRule.chain.is_(None), AlertRule.chain == chain),
+        or_(AlertRule.token_address.is_(None), AlertRule.token_address == (token_address.lower() if chain == "bsc" else token_address)),
+    )).all():
         result = evaluate_and_notify(
             session, rule, chain=chain, token_address=token_address, state=state, at=at
         )
@@ -217,8 +257,11 @@ def evaluate_and_notify(
     now = at or datetime.now(UTC)
     if now.tzinfo is None:
         now = now.replace(tzinfo=UTC)
-    if not rule.enabled or (rule.chain and rule.chain != chain):
+    if rule.deleted or not rule.enabled or (rule.chain and rule.chain != chain):
         return {"matched": False, "notified": False, "reason": "DISABLED_OR_CHAIN"}
+    token_address = token_address.lower() if chain == "bsc" else token_address
+    if rule.token_address is not None and rule.token_address != token_address:
+        return {"matched": False, "notified": False, "reason": "OUT_OF_SCOPE"}
     matched = evaluate_rule(rule, state)
     if not matched:
         return {"matched": False, "notified": False, "reason": "NO_MATCH"}
@@ -257,6 +300,8 @@ def evaluate_and_notify(
     payload = {
         "rule_id": rule.id,
         "rule_name": rule.name,
+        "rule_scope": rule.scope,
+        "rule_token_address": rule.token_address,
         "chain": chain,
         "token_address": token_address,
         "state": snapshot,

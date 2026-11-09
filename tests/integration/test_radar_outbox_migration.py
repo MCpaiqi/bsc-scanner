@@ -53,7 +53,7 @@ def test_outbox_migration_preserves_state_and_refuses_lossy_downgrade():
         with engine.connect() as connection:
             assert connection.scalar(text("SELECT event_id FROM radar_event_outbox")) == event_id
             assert connection.scalar(text("SELECT epoch FROM research_states WHERE chain='bsc'")) == 7
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20261107_0044"
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20261107_0045"
     finally:
         engine.dispose()
         with owner.begin() as connection:

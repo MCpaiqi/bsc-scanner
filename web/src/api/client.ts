@@ -13,6 +13,15 @@ async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function write<T>(path: string, method: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+  const response = await fetch(path, { method, headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(body), signal });
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new ApiError(response.status, data?.detail?.data_status);
+  }
+  return response.json() as Promise<T>;
+}
+
 export const api = {
   candidates: (params: URLSearchParams, signal?: AbortSignal) => get<CandidateResponse>(`/api/radar/candidates?${params}`, signal),
   candidate: (chain: string, token: string, signal?: AbortSignal) => get<Candidate>(`/api/radar/candidates/${encodeURIComponent(chain)}/${encodeURIComponent(token)}`, signal),
@@ -28,8 +37,8 @@ export const api = {
   alphaCandidate: (tokenOrPair: string, signal?: AbortSignal) => get<AlphaCandidateDetail>(`/api/alpha/candidates/${tokenOrPair}`, signal),
   alphaStats: (signal?: AbortSignal) => get<AlphaStats>("/api/alpha/stats", signal),
   annotation: (chain: string, token: string, signal?: AbortSignal) => get<Record<string, unknown>>(`/api/radar/annotations/${encodeURIComponent(chain)}/${encodeURIComponent(token)}`, signal),
-  saveAnnotation: (chain: string, token: string, body: Record<string, unknown>) => fetch(`/api/radar/annotations/${encodeURIComponent(chain)}/${encodeURIComponent(token)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((response) => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json() as Promise<Record<string, unknown>>; }),
-  createAlertRule: (body: Record<string, unknown>) => fetch("/api/radar/alert-rules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((response) => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json(); }),
+  saveAnnotation: (chain: string, token: string, body: Record<string, unknown>, signal?: AbortSignal) => write<Record<string, unknown>>(`/api/radar/annotations/${encodeURIComponent(chain)}/${encodeURIComponent(token)}`, "PUT", body, signal),
+  createAlertRule: (body: Record<string, unknown>, signal?: AbortSignal) => write<{ id: number; scope: "TOKEN" | "GLOBAL"; token_address: string | null }>("/api/radar/alert-rules", "POST", body, signal),
   walletProfile: (address: string, chain = "bsc", signal?: AbortSignal) => get<Record<string, unknown>>(`/api/wallet/${encodeURIComponent(address)}/profile?chain=${encodeURIComponent(chain)}`, signal),
   walletClusters: (address: string, chain = "bsc", signal?: AbortSignal) => get<Record<string, unknown>>(`/api/wallet/${encodeURIComponent(address)}/clusters?chain=${encodeURIComponent(chain)}`, signal),
   walletGraph: (address: string, chain = "bsc", signal?: AbortSignal) => get<Record<string, unknown>>(`/api/wallet/${encodeURIComponent(address)}/graph?chain=${encodeURIComponent(chain)}`, signal),

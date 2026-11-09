@@ -42,3 +42,19 @@ instantiate a second ingestion worker. `TokenMarketSnapshot` distinguishes
 `ON_CHAIN_TRADE_AGGREGATION` from `DEXSCREENER`, and USD volume includes only trades
 with a known USD valuation. Quote/native amounts remain separate and may be known
 while USD fields are `UNKNOWN`.
+
+
+## 研究备注与提醒范围
+
+工作台备注按 `(chain, token_address)` 共享保存；当前未按用户分区。`GET /api/radar/annotations/{chain}/{token}` 返回 `revision`，不存在或已删除时返回404。写入 `PUT` 必须带 `expected_revision`：0表示“当前不存在时创建”，正数表示“仅更新此版本”。未带条件返回428；版本已变化、被删除或被其他写入创建时返回409，客户端应保留草稿并读取最新版本，不能自动覆盖。正文仍为 `favorite`、`note`、`tags`。删除使用 `DELETE ...?expected_revision=<当前版本>`，清除备注内容并保留递增的身份/版本标记；重新创建不会复用旧的正数版本。
+
+`POST /api/radar/alert-rules` 接受明确的 `scope`：
+
+- `TOKEN`：必须提供有效 BSC `token_address`，只在此链、此合约上评估。
+- `GLOBAL`：`token_address` 必须为空，匹配规则所在链上的代币。兼容旧客户端的默认范围为GLOBAL；详情界面默认选择TOKEN，并展示完整合约地址。
+
+响应包含 `scope`、`token_address` 和 `request_id`。`PATCH /api/radar/alert-rules/{id}` 仅修改显式提供的字段，省略范围和地址会保留现有目标；明确选择GLOBAL时可以清除旧目标。`request_id` 不允许修改或清除。
+
+创建时可提供UUID格式的 `request_id`。相同编号和相同正文的重试返回同一规则，正文不同返回409；规则删除后隐藏并停用，保留历史及请求标识，旧创建重试不会复活该规则。没有编号的旧客户端创建请求仍不具有幂等保证。浏览器为最近256个规则定义缓存请求编号，在同一标签页的关闭/重开详情、参数切换和刷新后重用；禁用存储时仅保留当前页面内存缓存。缓存不包含备注、凭据或访问令牌。
+
+部署代码前先运行 `python -m alembic upgrade head`，0045迁移会给旧备注设置版本1，保留旧规则原有的GLOBAL范围，不从规则名称推断合约。包含新范围、请求标识、删除标记或已使用的备注版本时，降级会拒绝丢失这些元数据。权限和部署暴露范围仍需按可靠性计划R13验收。

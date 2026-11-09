@@ -27,3 +27,6 @@ Phase 1 保存后续数据摄取、评分、信号、回测和模拟交易所需
 运行 `python scripts/init_db.py` 应用当前 Alembic head（目前为 `20260904_0006`）。生产环境的结构变更必须新增 Alembic revision，禁止直接对生产数据库调用 `Base.metadata.create_all`。
 
 `20260904_0006` 不会为历史生命周期记录伪造 `event_index=0`。在线迁移发现旧数据时会拒绝继续，必须先依据原始回执人工回填身份。离线 `--sql` 模式只生成 SQL，不执行该前置数据检查。
+
+
+分析工作流独立于规范链上研究事实。`radar_annotations` 以 `(chain, token_address)` 标识共享备注，`revision` 对条件写入递增；删除清除人工内容并保留版本标记，防止旧正数版本编辑器覆盖重建后的备注。`alert_rules.token_address` 为空表示GLOBAL，非空表示TOKEN；TOKEN目标必须属于BSC。可选唯一 `request_id` 对创建重试去重，逻辑删除保留目标、请求身份与 `alert_history`。这些人工工作流字段不作为已验证链上事实输入。

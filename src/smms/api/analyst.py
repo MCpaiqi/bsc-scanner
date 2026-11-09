@@ -1,7 +1,8 @@
 """Analyst workflow API: annotations and safe alert rules."""
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -17,6 +18,8 @@ from smms.radar.alerts import (
     evaluate_and_notify,
     validate_rule_payload,
 )
+from smms.radar.annotations import AnnotationConflict, active_annotation, save_annotation
+from smms.radar.annotations import delete_annotation as remove_annotation
 from smms.radar.hooks import enqueue_alert
 
 router = APIRouter(prefix="/api/radar", tags=["analyst-workflow"])
@@ -39,7 +42,7 @@ def _address(value: str) -> str:
 def _validated_rule_payload(payload: "RulePayload") -> dict[str, Any]:
     """Apply the active BSC boundary before persisting an alert rule."""
 
-    values = payload.model_dump()
+    values = payload.model_dump(mode="json")
     values["chain"] = _chain(payload.chain)
     try:
         return validate_rule_payload(values)
@@ -48,6 +51,7 @@ def _validated_rule_payload(payload: "RulePayload") -> dict[str, Any]:
 
 
 class AnnotationPayload(BaseModel):
+    expected_revision: int | None = Field(None, ge=0)
     favorite: bool = False
     note: str | None = None
     tags: list[str] = Field(default_factory=list)
@@ -55,12 +59,28 @@ class AnnotationPayload(BaseModel):
 
 class RulePayload(BaseModel):
     name: str
+    scope: Literal["GLOBAL", "TOKEN"] = "GLOBAL"
+    token_address: str | None = None
+    request_id: UUID | None = None
     chain: str | None = None
     conditions: list[dict[str, Any]]
     match_mode: str = "all"
     notification_channels: list[str] = Field(default_factory=lambda: ["in-app"])
     cooldown_seconds: int = Field(300, ge=0)
     enabled: bool = True
+
+
+class RulePatchPayload(BaseModel):
+    name: str | None = None
+    scope: Literal["GLOBAL", "TOKEN"] | None = None
+    token_address: str | None = None
+    request_id: UUID | None = None
+    chain: str | None = None
+    conditions: list[dict[str, Any]] | None = None
+    match_mode: str | None = None
+    notification_channels: list[str] | None = None
+    cooldown_seconds: int | None = Field(None, ge=0)
+    enabled: bool | None = None
 
 
 class RuleEvaluationPayload(BaseModel):
@@ -72,6 +92,7 @@ class RuleEvaluationPayload(BaseModel):
 def _annotation_payload(row: RadarAnnotation) -> dict[str, Any]:
     return {
         "id": row.id,
+        "revision": row.revision,
         "chain": row.chain,
         "token_address": row.token_address,
         "favorite": row.favorite,
@@ -86,6 +107,9 @@ def _rule_payload(row: AlertRule) -> dict[str, Any]:
     return {
         "id": row.id,
         "name": row.name,
+        "scope": row.scope,
+        "token_address": row.token_address,
+        "request_id": row.request_id,
         "chain": row.chain,
         "conditions": row.conditions_json,
         "match_mode": row.match_mode,
@@ -103,7 +127,7 @@ async def list_annotations(chain: str | None = None, favorite: bool | None = Non
     async with session_scope(get_settings()) as session:
 
         def read(sync):
-            query = select(RadarAnnotation).order_by(RadarAnnotation.updated_at.desc())
+            query = select(RadarAnnotation).where(RadarAnnotation.deleted.is_(False)).order_by(RadarAnnotation.updated_at.desc())
             if chain:
                 query = query.where(RadarAnnotation.chain == chain)
             if favorite is not None:
@@ -116,24 +140,15 @@ async def list_annotations(chain: str | None = None, favorite: bool | None = Non
 @router.put("/annotations/{chain}/{token_address}")
 async def upsert_annotation(chain: str, token_address: str, payload: AnnotationPayload):
     chain, token_address = _chain(chain), _address(token_address)
+    if payload.expected_revision is None:
+        raise HTTPException(428, "expected_revision is required (0 for a new annotation)")
     async with session_scope(get_settings()) as session:
-
-        def write(sync):
-            row = sync.scalar(
-                select(RadarAnnotation).where(
-                    RadarAnnotation.chain == chain, RadarAnnotation.token_address == token_address
-                )
-            )
-            if row is None:
-                row = RadarAnnotation(chain=chain, token_address=token_address)
-                sync.add(row)
-            row.favorite, row.note = payload.favorite, payload.note
-            row.tags = sorted({str(tag).strip() for tag in payload.tags if str(tag).strip()})
-            row.updated_at = datetime.now(UTC)
-            sync.flush()
-            return _annotation_payload(row)
-
-        result = await session.run_sync(write)
+        try:
+            row = await session.run_sync(lambda sync: save_annotation(sync, chain=chain, token=token_address,
+                expected_revision=payload.expected_revision, favorite=payload.favorite, note=payload.note, tags=payload.tags))
+        except AnnotationConflict as exc:
+            raise HTTPException(409, "annotation changed; read the latest revision before saving") from exc
+        result = _annotation_payload(row)
         await session.commit()
         return result
 
@@ -142,30 +157,25 @@ async def upsert_annotation(chain: str, token_address: str, payload: AnnotationP
 async def get_annotation(chain: str, token_address: str):
     chain, token_address = _chain(chain), _address(token_address)
     async with session_scope(get_settings()) as session:
-        row = await session.scalar(
-            select(RadarAnnotation).where(
-                RadarAnnotation.chain == chain, RadarAnnotation.token_address == token_address
-            )
-        )
-    if row is None:
-        raise HTTPException(404, "annotation not found")
-    return _annotation_payload(row)
+        row = await session.run_sync(lambda sync: active_annotation(sync, chain, token_address))
+        if row is None:
+            raise HTTPException(404, "annotation not found")
+        return _annotation_payload(row)
 
 
 @router.delete("/annotations/{chain}/{token_address}")
-async def delete_annotation(chain: str, token_address: str):
+async def delete_annotation(chain: str, token_address: str, expected_revision: int | None = Query(None, ge=1)):
     chain, token_address = _chain(chain), _address(token_address)
+    if expected_revision is None:
+        raise HTTPException(428, "expected_revision is required")
     async with session_scope(get_settings()) as session:
-        row = await session.scalar(
-            select(RadarAnnotation).where(
-                RadarAnnotation.chain == chain, RadarAnnotation.token_address == token_address
-            )
-        )
-        if row is None:
-            raise HTTPException(404, "annotation not found")
-        await session.delete(row)
+        try:
+            revision = await session.run_sync(lambda sync: remove_annotation(sync, chain=chain, token=token_address,
+                expected_revision=expected_revision))
+        except AnnotationConflict as exc:
+            raise HTTPException(409, "annotation changed or was deleted") from exc
         await session.commit()
-        return {"deleted": True}
+        return {"deleted": True, "revision": revision}
 
 
 @router.get("/alert-rules")
@@ -173,7 +183,7 @@ async def list_alert_rules(enabled: bool | None = None):
     async with session_scope(get_settings()) as session:
 
         def read(sync):
-            query = select(AlertRule).order_by(AlertRule.id)
+            query = select(AlertRule).where(AlertRule.deleted.is_(False)).order_by(AlertRule.id)
             if enabled is not None:
                 query = query.where(AlertRule.enabled.is_(enabled))
             return [_rule_payload(row) for row in sync.scalars(query).all()]
@@ -185,7 +195,10 @@ async def list_alert_rules(enabled: bool | None = None):
 async def add_alert_rule(payload: RulePayload):
     values = _validated_rule_payload(payload)
     async with session_scope(get_settings()) as session:
-        row = await session.run_sync(lambda sync: create_rule(sync, values))
+        try:
+            row = await session.run_sync(lambda sync: create_rule(sync, values))
+        except InvalidRuleError as exc:
+            raise HTTPException(409, str(exc)) from exc
         result = _rule_payload(row)
         await session.commit()
         return result
@@ -195,20 +208,34 @@ async def add_alert_rule(payload: RulePayload):
 async def get_alert_rule(rule_id: int):
     async with session_scope(get_settings()) as session:
         row = await session.get(AlertRule, rule_id)
-    if row is None:
+    if row is None or row.deleted:
         raise HTTPException(404, "alert rule not found")
     return _rule_payload(row)
 
 
 @router.patch("/alert-rules/{rule_id}")
-async def update_alert_rule(rule_id: int, payload: RulePayload):
-    values = _validated_rule_payload(payload)
+async def update_alert_rule(rule_id: int, payload: RulePatchPayload):
     async with session_scope(get_settings()) as session:
         row = await session.get(AlertRule, rule_id)
-        if row is None:
+        if row is None or row.deleted:
             raise HTTPException(404, "alert rule not found")
+        changes = payload.model_dump(mode="json", exclude_unset=True)
+        if any(value is None and key not in {"chain", "token_address", "request_id"}
+               for key, value in changes.items()):
+            raise HTTPException(422, "non-null rule fields cannot be cleared")
+        if "request_id" in changes and changes["request_id"] != row.request_id:
+            raise HTTPException(422, "request_id is immutable")
+        merged = {**_rule_payload(row), **changes}
+        if changes.get("scope") == "GLOBAL" and "token_address" not in changes:
+            merged["token_address"] = None
+        try:
+            _chain(merged["chain"])
+            values = validate_rule_payload(merged)
+        except (InvalidRuleError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from exc
         for key, value in values.items():
-            setattr(row, key, value)
+            if key != "request_id":
+                setattr(row, key, value)
         row.updated_at = datetime.now(UTC)
         await session.flush()
         result = _rule_payload(row)
@@ -220,9 +247,10 @@ async def update_alert_rule(rule_id: int, payload: RulePayload):
 async def delete_alert_rule(rule_id: int):
     async with session_scope(get_settings()) as session:
         row = await session.get(AlertRule, rule_id)
-        if row is None:
+        if row is None or row.deleted:
             raise HTTPException(404, "alert rule not found")
-        await session.delete(row)
+        row.deleted, row.enabled = True, False
+        row.updated_at = datetime.now(UTC)
         await session.commit()
         return {"deleted": True}
 
@@ -232,7 +260,7 @@ async def evaluate_alert_rule(rule_id: int, payload: RuleEvaluationPayload):
     chain, token_address = _chain(payload.chain), _address(payload.token_address)
     async with session_scope(get_settings()) as session:
         row = await session.get(AlertRule, rule_id)
-        if row is None:
+        if row is None or row.deleted:
             raise HTTPException(404, "alert rule not found")
         result = await session.run_sync(
             lambda sync: evaluate_and_notify(
